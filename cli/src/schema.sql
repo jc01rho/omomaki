@@ -100,6 +100,31 @@ CREATE TABLE IF NOT EXISTS `ipc_requests` (
 	CONSTRAINT `fk_ipc_requests_thread_id_thread_sessions_thread_id_fk` FOREIGN KEY (`thread_id`) REFERENCES `thread_sessions`(`thread_id`) ON UPDATE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS `omo_message_queue` (
+	`id` text PRIMARY KEY,
+	`discord_thread_id` text NOT NULL,
+	`discord_message_id` text NOT NULL,
+	`omo_thread_id` text,
+	`client_user_message_id` text NOT NULL UNIQUE,
+	`content_json` text NOT NULL,
+	`status` text DEFAULT 'queued' NOT NULL,
+	`turn_id` text,
+	`attempts` integer DEFAULT 0 NOT NULL,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS `omo_thread_bindings` (
+	`discord_thread_id` text PRIMARY KEY,
+	`omo_thread_id` text NOT NULL UNIQUE,
+	`session_path` text,
+	`app_server_version` text,
+	`fork_parent_discord_thread_id` text,
+	`fork_parent_omo_thread_id` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS `part_messages` (
 	`part_id` text PRIMARY KEY,
 	`message_id` text NOT NULL,
@@ -143,6 +168,17 @@ CREATE TABLE IF NOT EXISTS `scheduled_tasks` (
 	`updated_at` datetime DEFAULT CURRENT_TIMESTAMP,
 	CONSTRAINT `fk_scheduled_tasks_channel_id_channel_directories_channel_id_fk` FOREIGN KEY (`channel_id`) REFERENCES `channel_directories`(`channel_id`) ON UPDATE CASCADE ON DELETE SET NULL,
 	CONSTRAINT `fk_scheduled_tasks_thread_id_thread_sessions_thread_id_fk` FOREIGN KEY (`thread_id`) REFERENCES `thread_sessions`(`thread_id`) ON UPDATE CASCADE ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS `security_audit` (
+	`id` text PRIMARY KEY,
+	`at` text NOT NULL,
+	`actor_user_id` text NOT NULL,
+	`guild_id` text,
+	`channel_id` text,
+	`action` text NOT NULL,
+	`cwd` text,
+	`detail_json` text
 );
 
 CREATE TABLE IF NOT EXISTS `session_agents` (
@@ -224,6 +260,7 @@ CREATE TABLE IF NOT EXISTS `thread_worktrees` (
 
 CREATE UNIQUE INDEX IF NOT EXISTS `forum_sync_configs_app_id_forum_channel_id_key` ON `forum_sync_configs` (`app_id`,`forum_channel_id`);
 CREATE INDEX IF NOT EXISTS `ipc_requests_status_created_at_idx` ON `ipc_requests` (`status`,`created_at`);
+CREATE INDEX IF NOT EXISTS `omo_message_queue_status_created_at_idx` ON `omo_message_queue` (`status`,`created_at`);
 CREATE INDEX IF NOT EXISTS `scheduled_task_runs_task_status_idx` ON `scheduled_task_runs` (`scheduled_task_id`,`status`);
 CREATE INDEX IF NOT EXISTS `scheduled_task_runs_session_status_idx` ON `scheduled_task_runs` (`session_id`,`status`);
 CREATE INDEX IF NOT EXISTS `scheduled_tasks_status_next_run_at_idx` ON `scheduled_tasks` (`status`,`next_run_at`);
