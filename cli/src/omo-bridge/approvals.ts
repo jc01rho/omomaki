@@ -1,7 +1,7 @@
-// Discord-agnostic approval bridge for omo app-server server-requests.
+// Discord-agnostic approval bridge for fail-closed accept/decline decisions.
 //
-// The app-server pushes server-requests (approval prompts) that must be
-// answered. This module owns the accept/decline decision lifecycle only —
+// Callers still own transport (RPC `extension_ui_response` or otherwise).
+// This module owns the accept/decline decision lifecycle only —
 // it knows nothing about Discord, Slack, or any other transport. Callers
 // supply a `presenter` (asks a human, returns a decision) and a `reply`
 // (sends the decision back over the wire, shape TBD by the caller).
