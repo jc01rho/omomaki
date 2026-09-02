@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import type { Event as OpenCodeEvent } from '@opencode-ai/sdk/v2'
 import {
+  abortRpcSession,
   getOrStartRpcSession,
   setRpcSessionSpawnForTests,
   shouldUseOmoRpc,
@@ -91,5 +92,52 @@ describe('rpc session', () => {
       }),
       'discord-shaped events',
     )
+  })
+
+  test('abort dispatches session.idle so the run is not left busy', async () => {
+    setRpcSessionSpawnForTests({
+      command: process.execPath,
+      args: [FIXTURE_PATH],
+    })
+    const dispatched: OpenCodeEvent[] = []
+    const session = await withTimeout(
+      getOrStartRpcSession({
+        threadId: 'thread-rpc-session',
+        cwd: process.cwd(),
+        dispatch: async (event) => {
+          dispatched.push(event)
+        },
+      }),
+      'getOrStartRpcSession',
+    )
+    const prompt = session.prompt('reply with RPC-OK-ONLY', async (event) => {
+      dispatched.push(event)
+    }).catch(() => {})
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        const started = Date.now()
+        const timer = setInterval(() => {
+          const busy = dispatched.some((event) => {
+            return (
+              event.type === 'session.status' &&
+              event.properties.status.type === 'busy'
+            )
+          })
+          if (busy) {
+            clearInterval(timer)
+            resolve()
+            return
+          }
+          if (Date.now() - started > TIMEOUT_MS) {
+            clearInterval(timer)
+            reject(new Error('did not observe busy'))
+          }
+        }, 10)
+      }),
+      'busy',
+    )
+    await withTimeout(abortRpcSession('thread-rpc-session'), 'abort')
+    await prompt
+    expect(dispatched.some((event) => event.type === 'session.idle')).toBe(true)
   })
 })

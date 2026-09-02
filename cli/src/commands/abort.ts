@@ -9,6 +9,7 @@ import {
 import type { CommandContext } from './types.js'
 import { cancelSessionSleepForThread, getThreadSession } from '../database.js'
 import { getOpencodeClient, initializeOpencodeForDirectory } from '../opencode.js'
+import { abortRpcSession, shouldUseOmoRpc } from '../omo-bridge/rpc-session.js'
 import {
   resolveWorkingDirectory,
   SILENT_MESSAGE_FLAGS,
@@ -75,6 +76,8 @@ export async function handleAbortCommand({
   const runtime = getRuntime(channel.id)
   if (runtime) {
     runtime.abortActiveRun('user-requested')
+  } else if (shouldUseOmoRpc()) {
+    await abortRpcSession(channel.id)
   } else {
     // No runtime but session exists — fall back to direct API abort
     const serverResult = await initializeOpencodeForDirectory(projectDirectory)

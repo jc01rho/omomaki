@@ -3862,6 +3862,35 @@ export class ThreadSessionRuntime {
     this.lastDisplayedContextPercentage = 0
     this.lastRateLimitDisplayTime = 0
 
+    if (shouldUseOmoRpc() && !input.command) {
+      const result = await this.submitViaOmoRpc({
+        prompt: input.prompt,
+        userId: input.userId,
+        username: input.username,
+        images: input.images,
+        appId: input.appId,
+        agent: input.agent,
+        model: input.model,
+        permissions: input.permissions,
+        injectionGuardPatterns: input.injectionGuardPatterns,
+        parentSessionId: input.parentSessionId,
+        sourceMessageId: input.sourceMessageId,
+        sourceThreadId: input.sourceThreadId,
+        repliedMessage: input.repliedMessage,
+        analyticsSource: input.analyticsSource,
+        sessionStartSource: input.sessionStartScheduleKind
+          ? {
+              scheduleKind: input.sessionStartScheduleKind,
+              scheduledTaskId: input.sessionStartScheduledTaskId,
+            }
+          : undefined,
+      })
+      if (result.queued) {
+        return
+      }
+      return
+    }
+
     // ── Ensure session ────────────────────────────────────────
     const sessionResult = await this.ensureSession({
       prompt: input.prompt,

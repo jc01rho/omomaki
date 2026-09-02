@@ -232,6 +232,15 @@ export class OmoRpcClient {
     }
 
     this.isStopping = true
+    const abortError = new Error('omo rpc client stopped')
+    for (const [, pending] of this.pendingRequests) {
+      pending.reject(abortError)
+    }
+    this.pendingRequests.clear()
+    for (const waiter of this.settledWaiters) {
+      waiter.reject(abortError)
+    }
+    this.settledWaiters.clear()
 
     const child = this.child
     if (!child) {
