@@ -164,6 +164,12 @@ import { createDebouncedProcessFlush } from '../debounced-process-flush.js'
 import { cancelHtmlActionsForThread } from '../html-actions.js'
 import { createDebouncedTimeout } from '../debounce-timeout.js'
 import { extractLeadingOpencodeCommand } from '../opencode-command-detection.js'
+import {
+  abortRpcSession,
+  getOrStartRpcSession,
+  shouldUseOmoRpc,
+  stopRpcSession,
+} from '../omo-bridge/rpc-session.js'
 
 const logger = createLogger(LogPrefix.SESSION)
 const discordLogger = createLogger(LogPrefix.DISCORD)
@@ -1059,6 +1065,7 @@ export class ThreadSessionRuntime {
   dispose(): void {
     this.disposed = true
     unregisterEventListener(this.threadId)
+    void stopRpcSession(this.threadId)
     void this.persistEventBufferDebounced.dispose()
     this.stopTyping()
 
@@ -2962,6 +2969,65 @@ export class ThreadSessionRuntime {
    * recovery so that promptAsync receives the same agent/model/variant/system
    * fields that the local-queue path provides.
    */
+  private async submitUserTurn(input: IngressInput): Promise<EnqueueResult> {
+    if (shouldUseOmoRpc()) {
+      return this.submitViaOmoRpc(input)
+    }
+    return this.submitViaOpencodeQueue(input)
+  }
+
+  private async submitViaOmoRpc(input: IngressInput): Promise<EnqueueResult> {
+    await this.supersedePendingSleep(input)
+    if (input.noReply) {
+      return { queued: false }
+    }
+
+    const cleanupOnError = async (errorMessage: string) => {
+      this.stopTyping()
+      await sendThreadMessage(this.thread, errorMessage, {
+        flags: NOTIFY_MESSAGE_FLAGS,
+      })
+      await this.tryDrainQueue({ showIndicator: true })
+    }
+
+    try {
+      const session = await getOrStartRpcSession({
+        threadId: this.threadId,
+        cwd: this.sdkDirectory,
+        dispatch: async (event) => {
+          if (this.disposed) {
+            return
+          }
+          await this.handleEvent(event)
+        },
+      })
+      await setThreadSession(this.thread.id, session.sessionId)
+      threadState.setSessionId(this.threadId, session.sessionId)
+      this.markQueueDispatchBusy(session.sessionId)
+      trackTurnStarted({
+        inputKind: input.command ? 'command' : 'prompt',
+        ingressMode: 'direct',
+        source: resolveTurnSource(input),
+        agent: input.agent,
+      })
+      await session.prompt(input.prompt, async (event) => {
+        await this.handleEvent(event)
+      })
+      logger.log(
+        `[INGRESS] omo rpc prompt accepted sessionId=${session.sessionId} threadId=${this.threadId}`,
+      )
+      return { queued: false }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      void notifyError(
+        error instanceof Error ? error : new Error(message),
+        'omo rpc prompt failed',
+      )
+      await cleanupOnError(`omo rpc error: ${message}`)
+      return { queued: false }
+    }
+  }
+
   private async submitViaOpencodeQueue(input: IngressInput): Promise<EnqueueResult> {
     await this.supersedePendingSleep(input)
     let skippedBySessionGuard = false
@@ -3377,6 +3443,9 @@ export class ThreadSessionRuntime {
       // Commands keep using local queue so they still support /queue-command.
       return this.enqueueViaLocalQueue(input)
     }
+    if (shouldUseOmoRpc()) {
+      return this.submitViaOmoRpc(input)
+    }
     return this.submitViaOpencodeQueue(input)
   }
 
@@ -3477,14 +3546,14 @@ export class ThreadSessionRuntime {
         // noReply messages always go through the opencode path so the flag
         // reaches promptAsync; local queue doesn't support noReply.
         const enqueueResult = resolvedInput.noReply
-          ? await this.submitViaOpencodeQueue({
+          ? await this.submitUserTurn({
               ...resolvedInput,
               mode: 'opencode',
               command: undefined,
             })
           : (resolvedInput.mode === 'local-queue' || resolvedInput.command)
             ? await this.enqueueViaLocalQueue(resolvedInput)
-            : await this.submitViaOpencodeQueue(resolvedInput)
+            : await this.submitUserTurn(resolvedInput)
         resolveOuter(enqueueResult)
       } catch (err) {
         rejectOuter(err)
@@ -3507,6 +3576,18 @@ export class ThreadSessionRuntime {
     reason: string
     sessionId: string
   }): Promise<void> {
+    if (shouldUseOmoRpc()) {
+      const startedAt = Date.now()
+      logger.log(
+        `[ABORT API] id=${abortId} reason=${reason} sessionId=${sessionId} start rpc`,
+      )
+      await abortRpcSession(this.threadId)
+      logger.log(
+        `[ABORT API] id=${abortId} reason=${reason} sessionId=${sessionId} success durationMs=${Date.now() - startedAt}`,
+      )
+      return
+    }
+
     const client = getOpencodeClient(this.sdkDirectory)
     if (!client) {
       logger.log(
