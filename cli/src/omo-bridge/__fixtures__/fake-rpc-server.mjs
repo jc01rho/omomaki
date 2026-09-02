@@ -94,6 +94,57 @@ function handleRecord(line) {
     return
   }
 
+  if (type === 'get_commands') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_commands',
+      success: true,
+      data: {
+        commands: [{ name: 'build', description: 'Build command', source: 'prompt' }],
+      },
+    })
+    return
+  }
+
+  if (type === 'get_available_models') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_available_models',
+      success: true,
+      data: {
+        models: [{ id: 'test-model', provider: 'omo', name: 'Test', contextWindow: 128000 }],
+      },
+    })
+    return
+  }
+
+  if (type === 'get_messages') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_messages',
+      success: true,
+      data: {
+        messages: [
+          {
+            id: 'user-1',
+            role: 'user',
+            content: 'hello',
+            timestamp: '2026-09-02T00:00:00.000Z',
+          },
+        ],
+      },
+    })
+    return
+  }
+
+  if (type === 'compact' || type === 'clone' || type === 'fork') {
+    send({ id, type: 'response', command: type, success: true, data: { cancelled: false } })
+    return
+  }
+
   if (type === 'prompt') {
     const message = typeof frame.message === 'string' ? frame.message : ''
     if (message.includes('touch-denied')) {

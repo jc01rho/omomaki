@@ -2762,6 +2762,19 @@ export class ThreadSessionRuntime {
     }
 
     this.markQuestionQueueHandoffStarted(sessionId)
+    if (shouldUseOmoRpc()) {
+      await this.submitViaOmoRpc({
+        prompt: next.prompt,
+        userId: next.userId,
+        username: next.username,
+        images: next.images,
+        appId: next.appId,
+        agent: next.agent,
+        model: next.model,
+        command: next.command,
+      })
+      return
+    }
     await this.submitViaOpencodeQueue(next)
   }
 
@@ -3010,7 +3023,10 @@ export class ThreadSessionRuntime {
         source: resolveTurnSource(input),
         agent: input.agent,
       })
-      await session.prompt(input.prompt, async (event) => {
+      const promptText = input.command
+        ? `/${input.command.name}${input.command.arguments ? ` ${input.command.arguments}` : ''}`
+        : input.prompt
+      await session.prompt(promptText, async (event) => {
         await this.handleEvent(event)
       })
       logger.log(
@@ -3439,8 +3455,8 @@ export class ThreadSessionRuntime {
     if (input.mode === 'local-queue') {
       return this.enqueueViaLocalQueue(input)
     }
-    if (input.command) {
-      // Commands keep using local queue so they still support /queue-command.
+    if (input.command && !shouldUseOmoRpc()) {
+      // OpenCode commands keep using local queue so they still support /queue-command.
       return this.enqueueViaLocalQueue(input)
     }
     if (shouldUseOmoRpc()) {
@@ -3862,9 +3878,10 @@ export class ThreadSessionRuntime {
     this.lastDisplayedContextPercentage = 0
     this.lastRateLimitDisplayTime = 0
 
-    if (shouldUseOmoRpc() && !input.command) {
+    if (shouldUseOmoRpc()) {
       const result = await this.submitViaOmoRpc({
         prompt: input.prompt,
+        command: input.command,
         userId: input.userId,
         username: input.username,
         images: input.images,

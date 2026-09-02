@@ -135,4 +135,16 @@ describe('OmoRpcClient', () => {
     await withTimeout(prompt, 'prompt after deny')
     await withTimeout(client.waitForSettled(), 'settled after deny')
   })
+
+  test('request returns response data for get_commands', async () => {
+    const client = makeClient()
+    await withTimeout(client.start(), 'start()')
+    const data = await withTimeout(
+      client.request('get_commands'),
+      'get_commands',
+    )
+    expect(data).toEqual({
+      commands: [{ name: 'build', description: 'Build command', source: 'prompt' }],
+    })
+  })
 })

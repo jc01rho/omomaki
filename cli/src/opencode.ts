@@ -65,6 +65,11 @@ import {
 } from './config.js'
 import { store } from './store.js'
 import { getHranaUrl } from './hrana-server.js'
+import {
+  getOmoRpcOpencodeClient,
+  restartOmoRpcRuntime,
+} from './omo-bridge/rpc-opencode-client.js'
+import { shouldUseOmoRpc } from './omo-bridge/rpc-session.js'
 
 export function resolveSubrouterPluginSpec({ isDev }: { isDev: boolean }) {
   const require = createRequire(import.meta.url)
@@ -1118,6 +1123,11 @@ export async function initializeOpencodeForDirectory(
 
   preferredStartupDirectory = directory
 
+  if (shouldUseOmoRpc()) {
+    const client = getOmoRpcOpencodeClient(directory)
+    return () => client
+  }
+
   const server = await ensureSingleServer({ directory })
   if (server instanceof Error) return server
 
@@ -1400,6 +1410,9 @@ export function getOpencodeServerBaseUrl(): string | null {
 }
 
 export function getOpencodeClient(directory: string): OpencodeClient | null {
+  if (shouldUseOmoRpc()) {
+    return getOmoRpcOpencodeClient(directory)
+  }
   if (!singleServer) {
     return null
   }
@@ -1513,6 +1526,10 @@ export async function stopOpencodeServer(): Promise<boolean> {
  * Used for resolving opencode state issues, refreshing auth, plugins, etc.
  */
 export async function restartOpencodeServer(): Promise<OpenCodeErrors | true> {
+  if (shouldUseOmoRpc()) {
+    await restartOmoRpcRuntime()
+    return true
+  }
   if (singleServer) {
     await stopOpencodeServer()
   }

@@ -140,4 +140,23 @@ describe('rpc session', () => {
     await prompt
     expect(dispatched.some((event) => event.type === 'session.idle')).toBe(true)
   })
+
+  test('request get_commands returns slash commands from rpc', async () => {
+    setRpcSessionSpawnForTests({
+      command: process.execPath,
+      args: [FIXTURE_PATH],
+    })
+    const session = await withTimeout(
+      getOrStartRpcSession({
+        threadId: 'thread-rpc-session',
+        cwd: process.cwd(),
+        dispatch: async () => {},
+      }),
+      'getOrStartRpcSession',
+    )
+    const data = await withTimeout(session.request('get_commands'), 'get_commands')
+    expect(data).toEqual({
+      commands: [{ name: 'build', description: 'Build command', source: 'prompt' }],
+    })
+  })
 })

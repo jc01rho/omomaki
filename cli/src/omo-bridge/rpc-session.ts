@@ -31,6 +31,10 @@ export type RpcSessionHandle = {
     text: string,
     dispatchNow: (event: OpenCodeEvent) => Promise<void>,
   ): Promise<void>
+  request(
+    type: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown>
   abort(): Promise<void>
   stop(): Promise<void>
 }
@@ -168,6 +172,12 @@ function createHandle(live: LiveSession, threadId: string): RpcSessionHandle {
       }
       await live.dispatchChain
     },
+    async request(
+      type: string,
+      params: Record<string, unknown> = {},
+    ): Promise<unknown> {
+      return live.client.request(type, params)
+    },
     async abort(): Promise<void> {
       await stopLiveSession(live, threadId)
     },
@@ -283,4 +293,12 @@ export async function stopAllRpcSessions(): Promise<void> {
   for (const threadId of threadIds) {
     await stopRpcSession(threadId)
   }
+}
+
+export function getLiveRpcClient(threadId: string): OmoRpcClient | null {
+  return sessions.get(threadId)?.client ?? null
+}
+
+export function sessionFileForThread(threadId: string): string {
+  return sessionFileFor(threadId)
 }
