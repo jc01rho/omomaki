@@ -258,6 +258,47 @@ export const session_sleeps = sqliteCore.sqliteTable('session_sleeps', {
   sqliteCore.index('session_sleeps_status_wake_at_idx').on(table.status, table.wake_at),
 ])
 
+// omo_thread_bindings maps a Discord thread to an omo session path.
+export const omo_thread_bindings = sqliteCore.sqliteTable('omo_thread_bindings', {
+  discord_thread_id: sqliteCore.text('discord_thread_id').primaryKey().notNull(),
+  omo_thread_id: sqliteCore.text('omo_thread_id').notNull().unique(),
+  session_path: sqliteCore.text('session_path'),
+  app_server_version: sqliteCore.text('app_server_version'),
+  fork_parent_discord_thread_id: sqliteCore.text('fork_parent_discord_thread_id'),
+  fork_parent_omo_thread_id: sqliteCore.text('fork_parent_omo_thread_id'),
+  created_at: sqliteCore.text('created_at').notNull(),
+  updated_at: sqliteCore.text('updated_at').notNull(),
+})
+
+// omo_message_queue holds outbound Discord messages before they are posted.
+export const omo_message_queue = sqliteCore.sqliteTable('omo_message_queue', {
+  id: sqliteCore.text('id').primaryKey().notNull(),
+  discord_thread_id: sqliteCore.text('discord_thread_id').notNull(),
+  discord_message_id: sqliteCore.text('discord_message_id').notNull(),
+  omo_thread_id: sqliteCore.text('omo_thread_id'),
+  client_user_message_id: sqliteCore.text('client_user_message_id').notNull().unique(),
+  content_json: sqliteCore.text('content_json').notNull(),
+  status: sqliteCore.text('status', { enum: ['queued', 'dispatching', 'running', 'completed', 'failed', 'cancelled', 'uncertain'] }).notNull().default('queued'),
+  turn_id: sqliteCore.text('turn_id'),
+  attempts: sqliteCore.integer('attempts', { mode: 'number' }).notNull().default(0),
+  created_at: sqliteCore.text('created_at').notNull(),
+  updated_at: sqliteCore.text('updated_at').notNull(),
+}, (table) => [
+  sqliteCore.index('omo_message_queue_status_created_at_idx').on(table.status, table.created_at),
+])
+
+// security_audit records every actor action for auditability.
+export const security_audit = sqliteCore.sqliteTable('security_audit', {
+  id: sqliteCore.text('id').primaryKey().notNull(),
+  at: sqliteCore.text('at').notNull(),
+  actor_user_id: sqliteCore.text('actor_user_id').notNull(),
+  guild_id: sqliteCore.text('guild_id'),
+  channel_id: sqliteCore.text('channel_id'),
+  action: sqliteCore.text('action').notNull(),
+  cwd: sqliteCore.text('cwd'),
+  detail_json: sqliteCore.text('detail_json'),
+})
+
 export const ipc_requests = sqliteCore.sqliteTable('ipc_requests', {
   id: sqliteCore.text('id').primaryKey().notNull().$defaultFn(() => crypto.randomUUID()),
   type: sqliteCore.text('type', { enum: ['file_upload', 'action_buttons'] }).notNull(),
@@ -294,6 +335,9 @@ export const relations = defineRelations({
   session_start_sources,
   forum_sync_configs,
   session_sleeps,
+  omo_thread_bindings,
+  omo_message_queue,
+  security_audit,
   ipc_requests,
 }, (r) => ({
   thread_sessions: {
@@ -367,6 +411,9 @@ export const relations = defineRelations({
   forum_sync_configs: {
     bot: r.one.bot_tokens({ from: r.forum_sync_configs.app_id, to: r.bot_tokens.app_id }),
   },
+  omo_thread_bindings: {},
+  omo_message_queue: {},
+  security_audit: {},
   ipc_requests: {
     thread: r.one.thread_sessions({ from: r.ipc_requests.thread_id, to: r.thread_sessions.thread_id }),
   },
