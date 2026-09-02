@@ -672,4 +672,5 @@ export function getOmoRpcOpencodeClient(directory: string): OpencodeClient {
 export async function restartOmoRpcRuntime(): Promise<void> {
   await stopAllRpcSessions()
   shims.clear()
+  revertCursors.clear()
 }
