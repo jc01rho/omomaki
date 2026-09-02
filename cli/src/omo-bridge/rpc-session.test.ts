@@ -33,15 +33,22 @@ afterEach(async () => {
 
 describe('rpc session', () => {
   test('shouldUseOmoRpc is false under vitest unless KIMAKI_USE_OMO_RPC=1', () => {
-    const previous = process.env['KIMAKI_USE_OMO_RPC']
+    const previousOmoRpc = process.env['KIMAKI_USE_OMO_RPC']
+    const previousVitest = process.env['KIMAKI_VITEST']
     delete process.env['KIMAKI_USE_OMO_RPC']
+    process.env['KIMAKI_VITEST'] = '1'
     expect(shouldUseOmoRpc()).toBe(false)
     process.env['KIMAKI_USE_OMO_RPC'] = '1'
     expect(shouldUseOmoRpc()).toBe(true)
-    if (previous === undefined) {
+    if (previousOmoRpc === undefined) {
       delete process.env['KIMAKI_USE_OMO_RPC']
     } else {
-      process.env['KIMAKI_USE_OMO_RPC'] = previous
+      process.env['KIMAKI_USE_OMO_RPC'] = previousOmoRpc
+    }
+    if (previousVitest === undefined) {
+      delete process.env['KIMAKI_VITEST']
+    } else {
+      process.env['KIMAKI_VITEST'] = previousVitest
     }
   })
 
@@ -139,5 +146,24 @@ describe('rpc session', () => {
     await withTimeout(abortRpcSession('thread-rpc-session'), 'abort')
     await prompt
     expect(dispatched.some((event) => event.type === 'session.idle')).toBe(true)
+  })
+
+  test('request get_commands returns slash commands from rpc', async () => {
+    setRpcSessionSpawnForTests({
+      command: process.execPath,
+      args: [FIXTURE_PATH],
+    })
+    const session = await withTimeout(
+      getOrStartRpcSession({
+        threadId: 'thread-rpc-session',
+        cwd: process.cwd(),
+        dispatch: async () => {},
+      }),
+      'getOrStartRpcSession',
+    )
+    const data = await withTimeout(session.request('get_commands'), 'get_commands')
+    expect(data).toEqual({
+      commands: [{ name: 'build', description: 'Build command', source: 'prompt' }],
+    })
   })
 })

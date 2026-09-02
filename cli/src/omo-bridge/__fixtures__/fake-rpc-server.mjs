@@ -14,12 +14,17 @@
 // - abort {id}: success + agent_settled.
 // - get_protocol_info {id}: classic mode info.
 // - get_state {id}: {isSettled:true}.
-// - anything else once started: {success:true, echoed:type}.
+// - get_messages {id}: one user message.
+// - get_loaded_surfaces {id}: MCP-like status payload.
+// - navigate_tree {id, targetId}: success + {cancelled:false} (used by
+//   session.revert/unrevert shim mapping).
 
 import { StringDecoder } from 'node:string_decoder'
 
 const decoder = new StringDecoder('utf8')
 let buffer = ''
+/** @type {let} busy flag toggled by set_busy for session.status tests. */
+let busy = false
 /** @type {Map<string, {id: string}>} */
 const pendingConfirms = new Map()
 
@@ -78,8 +83,18 @@ function handleRecord(line) {
       type: 'response',
       command: 'get_state',
       success: true,
-      data: { isSettled: true, followUpMessages: [], steerPrompt: null },
+      data: {
+        isSettled: !busy,
+        followUpMessages: [],
+        steerPrompt: null,
+      },
     })
+    return
+  }
+
+  if (type === 'set_busy') {
+    busy = true
+    send({ id, type: 'response', command: 'set_busy', success: true })
     return
   }
 
@@ -94,8 +109,83 @@ function handleRecord(line) {
     return
   }
 
+  if (type === 'get_commands') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_commands',
+      success: true,
+      data: {
+        commands: [{ name: 'build', description: 'Build command', source: 'prompt' }],
+      },
+    })
+    return
+  }
+
+  if (type === 'get_available_models') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_available_models',
+      success: true,
+      data: {
+        models: [{ id: 'test-model', provider: 'omo', name: 'Test', contextWindow: 128000 }],
+      },
+    })
+    return
+  }
+
+  if (type === 'get_loaded_surfaces') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_loaded_surfaces',
+      success: true,
+      data: {
+        mcpServers: [
+          { name: 'connected-server', status: 'connected' },
+          { name: 'enabled-server', status: 'enabled' },
+          { name: 'disabled-server', status: 'disabled' },
+          { name: 'failed-server', status: 'failed' },
+        ],
+      },
+    })
+    return
+  }
+
+  if (type === 'get_messages') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_messages',
+      success: true,
+      data: {
+        messages: [
+          {
+            id: 'user-1',
+            role: 'user',
+            content: 'hello',
+            timestamp: '2026-09-02T00:00:00.000Z',
+          },
+        ],
+      },
+    })
+    return
+  }
+
+  if (type === 'compact' || type === 'clone' || type === 'fork' || type === 'navigate_tree') {
+    send({ id, type: 'response', command: type, success: true, data: { cancelled: false } })
+    return
+  }
+
   if (type === 'prompt') {
     const message = typeof frame.message === 'string' ? frame.message : ''
+    if (message.includes('set_busy')) {
+      busy = true
+    }
+    if (message.includes('set_idle')) {
+      busy = false
+    }
     if (message.includes('touch-denied')) {
       const confirmId = 'confirm-1'
       pendingConfirms.set(confirmId, { id })

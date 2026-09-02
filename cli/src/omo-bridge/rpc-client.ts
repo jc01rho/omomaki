@@ -74,7 +74,7 @@ export type OmoRpcClientOptions = {
 }
 
 type PendingRequest = {
-  resolve: () => void
+  resolve: (data: unknown) => void
   reject: (error: Error) => void
 }
 
@@ -285,6 +285,13 @@ export class OmoRpcClient {
   }
 
   async prompt(message: string): Promise<void> {
+    await this.request('prompt', { message })
+  }
+
+  async request(
+    type: string,
+    params: Record<string, unknown> = {},
+  ): Promise<unknown> {
     if (this.state !== 'running' || !this.child) {
       throw new Error('client is not running')
     }
@@ -292,11 +299,11 @@ export class OmoRpcClient {
     const id = this.nextId
     this.nextId += 1
 
-    const completion = new Promise<void>((resolve, reject) => {
+    const completion = new Promise<unknown>((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject })
     })
 
-    this.write({ id, type: 'prompt', message })
+    this.write({ id, type, ...params })
     return completion
   }
 
@@ -363,7 +370,7 @@ export class OmoRpcClient {
           pending.reject(new Error(`request ${id} failed: ${reason}`))
           return
         }
-        pending.resolve()
+        pending.resolve(frame.data)
         return
       }
     }

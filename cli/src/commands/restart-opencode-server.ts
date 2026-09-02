@@ -84,14 +84,14 @@ export async function handleRestartOpencodeServerCommand({
     channelId: parentChannelId || undefined,
   })
 
-  logger.log(`[RESTART] Restarting shared opencode server`)
+  logger.log(`[RESTART] Restarting agent runtime`)
 
   const result = await restartOpencodeServer()
 
   if (result instanceof Error) {
     logger.error('[RESTART] Failed:', result)
     await command.editReply({
-      content: `Failed to restart opencode server: ${result.message}`,
+      content: `Failed to restart agent runtime: ${result.message}`,
     })
     return
   }
@@ -101,7 +101,7 @@ export async function handleRestartOpencodeServerCommand({
       ? ` (aborted ${abortedCount} active session${abortedCount > 1 ? 's' : ''})`
       : ''
   await command.editReply({
-    content: `Opencode server **restarted** successfully${abortMsg}. Re-registering slash commands...`,
+    content: `Agent runtime **restarted** successfully${abortMsg}. Re-registering slash commands...`,
   })
   logger.log('[RESTART] Shared opencode server restarted')
 
@@ -111,7 +111,7 @@ export async function handleRestartOpencodeServerCommand({
   if (!token) {
     logger.error('[RESTART] No bot token available, skipping command registration')
     await command.editReply({
-      content: `Opencode server **restarted**${abortMsg}, but slash command re-registration skipped (no bot token)`,
+      content: `Agent runtime **restarted**${abortMsg}, but slash command re-registration skipped (no bot token)`,
     })
     return
   }
@@ -150,13 +150,13 @@ export async function handleRestartOpencodeServerCommand({
   if (registerResult instanceof Error) {
     logger.error('[RESTART] Failed to re-register commands:', registerResult.message)
     await command.editReply({
-      content: `Opencode server **restarted**${abortMsg}, but slash command re-registration failed: ${registerResult.message}`,
+      content: `Agent runtime **restarted**${abortMsg}, but slash command re-registration failed: ${registerResult.message}`,
     })
     return
   }
 
   logger.log('[RESTART] Slash commands re-registered')
   await command.editReply({
-    content: `Opencode server **restarted** and slash commands **re-registered**${abortMsg}`,
+    content: `Agent runtime **restarted** and slash commands **re-registered**${abortMsg}`,
   })
 }

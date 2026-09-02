@@ -31,6 +31,10 @@ export type RpcSessionHandle = {
     text: string,
     dispatchNow: (event: OpenCodeEvent) => Promise<void>,
   ): Promise<void>
+  request(
+    type: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown>
   abort(): Promise<void>
   stop(): Promise<void>
 }
@@ -68,7 +72,13 @@ export function shouldUseOmoRpc(): boolean {
   if (process.env['KIMAKI_USE_OMO_RPC'] === '1') {
     return true
   }
-  return process.env['KIMAKI_VITEST'] !== '1'
+  // 프로덕션 기본값은 클래식 omo RPC다. vitest 하네스만 KIMAKI_VITEST=1
+  // (cli/vitest.config.ts) 를 주입하고, 위의 명시적 플래그가 없을 경우에만
+  // OpenCode 경로로 분기한다.
+  if (process.env['KIMAKI_VITEST'] === '1') {
+    return false
+  }
+  return true
 }
 
 function sessionFileFor(threadId: string): string {
@@ -167,6 +177,12 @@ function createHandle(live: LiveSession, threadId: string): RpcSessionHandle {
         // Abort/stop rejects in-flight waiters; idle was already synthesized.
       }
       await live.dispatchChain
+    },
+    async request(
+      type: string,
+      params: Record<string, unknown> = {},
+    ): Promise<unknown> {
+      return live.client.request(type, params)
     },
     async abort(): Promise<void> {
       await stopLiveSession(live, threadId)
@@ -283,4 +299,12 @@ export async function stopAllRpcSessions(): Promise<void> {
   for (const threadId of threadIds) {
     await stopRpcSession(threadId)
   }
+}
+
+export function getLiveRpcClient(threadId: string): OmoRpcClient | null {
+  return sessions.get(threadId)?.client ?? null
+}
+
+export function sessionFileForThread(threadId: string): string {
+  return sessionFileFor(threadId)
 }
