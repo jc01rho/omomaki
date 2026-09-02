@@ -60,6 +60,24 @@ describe('OmoRpcClient', () => {
     ).toThrow(/listen/)
   })
 
+  test('injects --no-extensions and -e omomaki-approve.ts for omo command', () => {
+    const client = new OmoRpcClient({
+      command: 'omo',
+      args: ['--mode', 'rpc', '--session', '/tmp/s.jsonl'],
+    })
+    const args = client.getSpawnArgs()
+    expect(args).toContain('--no-extensions')
+    const extIndex = args.indexOf('-e')
+    expect(extIndex).toBeGreaterThan(-1)
+    expect(args[extIndex + 1]).toMatch(/omomaki-approve\.ts$/)
+    expect(args.join(' ')).not.toMatch(/\.omo\/agent\/extensions/)
+  })
+
+  test('does not inject extension flags for non-omo fixtures', () => {
+    const client = makeClient()
+    expect(client.getSpawnArgs()).toEqual([FIXTURE_PATH])
+  })
+
   test('rejects --multi-session (classic --session only)', () => {
     expect(
       () =>

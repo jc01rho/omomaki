@@ -35,11 +35,16 @@ export default function omomakiApprove(pi: OmomakiApproveHost): void {
     if (toolName === undefined || !GATED_TOOLS.has(toolName)) {
       return undefined
     }
-    const approved = await ctx.ui.confirm(
-      `Approve ${toolName} tool call`,
-      `Do you want to proceed with this ${toolName} tool call?`,
-      { timeout: 60_000 },
-    )
+    let approved = false
+    try {
+      approved = await ctx.ui.confirm(
+        `Approve ${toolName} tool call`,
+        `Do you want to proceed with this ${toolName} tool call?`,
+        { timeout: 60_000 },
+      )
+    } catch {
+      return { block: true }
+    }
     if (!approved) {
       return { block: true }
     }

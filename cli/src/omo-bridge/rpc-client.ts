@@ -1,10 +1,41 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { StringDecoder } from 'node:string_decoder'
 import { attachJsonlLineReader, serializeJsonLine } from './rpc-jsonl.js'
 
 const DEFAULT_COMMAND = 'omo'
 const DEFAULT_ARGS = ['--mode', 'rpc'] as const
 const FORCE_KILL_TIMEOUT_MS = 2_000
+const APPROVE_EXTENSION_PATH = fileURLToPath(
+  new URL('./omomaki-approve.ts', import.meta.url),
+)
+
+function looksLikeOmoCommand(command: string): boolean {
+  const base = path.basename(command)
+  return base === 'omo' || base === 'omo.exe'
+}
+
+function injectApproveExtension(args: string[]): string[] {
+  const hasNoExtensions = args.some(
+    (arg) => arg === '--no-extensions' || arg.startsWith('--no-extensions='),
+  )
+  const hasExplicitExtension = args.some(
+    (arg, index) =>
+      arg === '-e' ||
+      arg === '--extension' ||
+      arg.startsWith('--extension=') ||
+      (arg === '-e' && args[index + 1] !== undefined),
+  )
+  const injected = [...args]
+  if (!hasNoExtensions) {
+    injected.push('--no-extensions')
+  }
+  if (!hasExplicitExtension) {
+    injected.push('-e', APPROVE_EXTENSION_PATH)
+  }
+  return injected
+}
 
 type RpcId = string | number
 
@@ -144,12 +175,18 @@ export class OmoRpcClient {
     }
 
     this.command = options.command ?? DEFAULT_COMMAND
-    this.args = args
+    this.args = looksLikeOmoCommand(this.command)
+      ? injectApproveExtension(args)
+      : args
     this.cwd = options.cwd
     this.onStderr = options.stderr ?? ((line) => process.stderr.write(`${line}\n`))
     this.onEventCallback = options.onEvent ?? (() => {})
     this.onExtensionUiRequestCallback =
       options.onExtensionUiRequest ?? (() => {})
+  }
+
+  getSpawnArgs(): readonly string[] {
+    return this.args
   }
 
   async start(): Promise<void> {

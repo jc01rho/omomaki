@@ -14,5 +14,6 @@ describe('omomaki-approve extension source', () => {
     expect(source).toMatch(/tool_call/)
     expect(source).toMatch(/ctx\.ui\.confirm/)
     expect(source).toMatch(/block:\s*true/)
+    expect(source).toMatch(/catch/)
   })
 })
