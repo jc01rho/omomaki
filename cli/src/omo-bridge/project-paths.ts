@@ -2,7 +2,7 @@
 //
 // omomaki lets callers point a thread's cwd at an arbitrary path; this
 // module is the single choke point that rejects anything outside the
-// configured project roots before it ever reaches OmoAppServerClient.
+// configured project roots before it ever reaches OmoRpcClient.
 // Every check is done on realpath'd (symlink-resolved) paths so a symlink
 // inside an allowed root cannot be used to escape it, and raw paths that
 // spell out a '..' segment are rejected outright regardless of where they

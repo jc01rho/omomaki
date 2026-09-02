@@ -1,8 +1,20 @@
 # omomaki 전송 계층 전환 계획: app-server → omo RPC 모드
 
+## 현재 상태 (2026-09-02)
+
+프로덕션 Discord 세션은 **클래식 `omo --mode rpc --session`** (`OmoRpcClient`, LF JSONL, `--listen` 거부)이다. 승인은 in-repo `omomaki-approve.ts`를 `--no-extensions -e`로 주입한다 (`~/.omo/agent/extensions`에 쓰지 않음).
+
+착지한 PR:
+- P0 bridge: https://github.com/jc01rho/omomaki/pull/1 MERGED
+- P1 OmoRpcClient: https://github.com/jc01rho/omomaki/pull/2 MERGED
+- P2 Discord wire: https://github.com/jc01rho/omomaki/pull/3 MERGED
+- P3 abort/queue/approval: https://github.com/jc01rho/omomaki/pull/4 MERGED
+
+OpenCode SDK는 **vitest e2e 하니스**와 일부 slash-command(`session.command`) 경로에만 남는다. 죽은 app-server `thread/*`/`turn/*` 어댑터(`OmoAppServerClient`)는 제거했다.
+
 ## 1. 요약
 
-omomaki의 에이전트 런타임 연결을 **omo app-server(Codex 호환 JSON-RPC)**에서 **omo 기본 RPC 모드(`omo --mode rpc --multi-session`)**로 전환한다. RPC 모드는 senpi가 자체 세션 런타임에 대해 제공하는 1급(native) 전송 계층으로, steer/follow-up/권한 요청/어텐션 폴링 같은 대화 제어가 프로토콜에 내장되어 있다. 이 전환은 포팅의 후반부 단계에 해당한다: `reports/kimaki-features.md`의 피처 인벤토리는 그대로 유지하고, 아래에 명시된 매핑 테이블에 따라 각 피처의 전송 방식만 교체한다.
+omomaki의 에이전트 런타임 연결을 **omo app-server(Codex 호환 JSON-RPC)**에서 **omo 기본 RPC 모드(`omo --mode rpc --session`)**로 전환한다. RPC 모드는 senpi가 자체 세션 런타임에 대해 제공하는 1급(native) 전송 계층으로, steer/follow-up/권한 요청/어텐션 폴링 같은 대화 제어가 프로토콜에 내장되어 있다. 이 전환은 포팅의 후반부 단계에 해당한다: `reports/kimaki-features.md`의 피처 인벤토리는 그대로 유지하고, 아래에 명시된 매핑 테이블에 따라 각 피처의 전송 방식만 교체한다.
 
 검증 근거(라이브 프로브, 이 머신의 omo 2026.8.31 기준):
 - 세션 관리: `open_session` (`id` 태그 포함), `get_state`, `get_entries`, `get_available_models`
@@ -74,22 +86,20 @@ v1 계획(`reports/plan-appserver-v1-archived.md`)은 app-server의 Codex 호환
 - 폐기할 부분 최종 확정 (v1 구현물 중 유지 vs 삭제)
 - 게이트: 모든 결정 사항이 라이브 관찰로 뒷받침됨
 
-### Phase R1 — 클라이언트 교체
-- `OmoRpcClient` 구현 (app-server 클라이언트와 동일한 안전 기준: stdio 전용, 재접속 FSM)
-- 승인 브리지가 RPC 알림을 처리하도록 수정
-- app-server 전용 모듈 제거
-- 게이트: 로컬 세션에서 open → prompt → settled → entries 왕복 성공
+### Phase R1 — 클라이언트 교체 (완료, PR #2)
+- `OmoRpcClient` 구현 (stdio 전용, `--listen` 거부, LF JSONL)
+- in-repo `omomaki-approve.ts`를 `-e`로 주입
+- 게이트: 격리 TMPDIR prompt → RPC-OK-ONLY + agent_settled; deny fail-closed
 
-### Phase R2 — Discord 통합
-- 스트리밍/최종 상태 라우팅을 RPC 이벤트 기반으로 교체
-- steer/follow-up 정책 적용, SQLite outbox 역할 축소
-- 세션/바인딩 라우팅은 RPC의 클라이언트 선택 `sessionId`를 사용
-- 게이트: Discord 샌드박스에서 메시지 → 스트림 → 완료 흐름 정상 동작
+### Phase R2 — Discord 통합 (완료, PR #3/#4)
+- 스트리밍/최종 상태를 RPC `text_delta`/`agent_settled` → Discord 이벤트 버퍼로 합성
+- abort는 idle 합성 + 자식 SIGTERM/SIGKILL; 권한 카드는 `extension_ui_response`
+- 게이트: digital-discord 메시지 → `⬥ RPC-OK-ONLY` + footer
 
-### Phase R3 — 정리 및 문서화
+### Phase R3 — 정리 및 문서화 (이 PR)
+- 죽은 app-server `OmoAppServerClient` / thread·turn 어댑터 제거
 - v1 계획 아카이브 유지 (`reports/plan-appserver-v1-archived.md`)
-- 이 문서를 신규 PLAN으로 승격, v1의 `PLAN.md`는 교체
-- 위험 등록부는 신규 전송 계층에 맞게 갱신
+- OpenCode는 vitest e2e 하니스만 유지
 
 ## 6. 리스크
 
