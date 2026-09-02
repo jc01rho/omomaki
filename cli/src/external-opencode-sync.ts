@@ -30,6 +30,7 @@ import {
 import {
   initializeOpencodeForDirectory,
 } from './opencode.js'
+import { shouldUseOmoRpc } from './omo-bridge/rpc-session.js'
 import { isEssentialToolPart } from './session-handler/thread-session-runtime.js'
 import { notifyError } from './sentry.js'
 import { store } from './store.js'
@@ -634,13 +635,19 @@ async function syncDirectoryInner({
 
   const statusesResponse = await client.session.status({
     directory,
-  }).catch(() => {
-    return null
+  }).catch((error) => {
+    return new Error(`Failed to fetch session statuses for ${directory}`, {
+      cause: error,
+    })
   })
-  if (statusesResponse?.data) {
+  const statuses = (() => {
+    if (statusesResponse instanceof Error) return {}
+    return statusesResponse.data ?? {}
+  })()
+  if (statuses && Object.keys(statuses).length > 0) {
     await pulseTypingForBusySessions({
       discordClient,
-      statuses: statusesResponse.data as Record<string, { type: string }>,
+      statuses,
     }).catch(() => {})
   }
   if (signal.aborted) return
@@ -681,6 +688,10 @@ async function pollExternalSessions({
 }: {
   discordClient: Client
 }): Promise<void> {
+  if (shouldUseOmoRpc()) {
+    logger.log('[omo-rpc] external opencode session sync disabled')
+    return
+  }
   const trackedChannels = await listTrackedTextChannels()
   const directoryTargets = groupTrackedChannelsByDirectory(trackedChannels)
     .filter((t) => {
@@ -709,6 +720,10 @@ export function startExternalOpencodeSessionSync({
 }: {
   discordClient: Client
 }): void {
+  if (shouldUseOmoRpc()) {
+    logger.log('[omo-rpc] external opencode session sync disabled')
+    return
+  }
   if (
     process.env.KIMAKI_VITEST &&
     process.env.KIMAKI_ENABLE_EXTERNAL_OPENCODE_SYNC !== '1'

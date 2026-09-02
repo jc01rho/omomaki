@@ -33,6 +33,9 @@ import {
   getOpencodeServerPort,
   getOpencodeServerAuthHeaders,
 } from '../opencode.js'
+import { shouldUseOmoRpc } from '../omo-bridge/rpc-session.js'
+import { getOmoRpcOpencodeClient } from '../omo-bridge/rpc-opencode-client.js'
+import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { resolveTextChannel, getKimakiMetadata } from '../discord-utils.js'
 import { createLogger, LogPrefix } from '../logger.js'
 import { buildPaginatedOptions, parsePaginationValue } from './paginated-select.js'
@@ -156,6 +159,15 @@ const PROVIDER_POPULARITY_ORDER: string[] = [
 
 // ── Helpers ─────────────────────────────────────────────────────
 
+async function getOpencodeClient(
+  dir: string,
+): Promise<(() => OpencodeClient) | Error> {
+  if (shouldUseOmoRpc()) {
+    return () => getOmoRpcOpencodeClient(dir)
+  }
+  return await initializeOpencodeForDirectory(dir)
+}
+
 function extractErrorMessage({
   error,
   fallback,
@@ -257,7 +269,7 @@ export async function handleLoginCommand({
   }
 
   try {
-    const getClient = await initializeOpencodeForDirectory(projectDirectory)
+    const getClient = await getOpencodeClient(projectDirectory)
     if (getClient instanceof Error) {
       await interaction.editReply({ content: getClient.message })
       return
@@ -411,7 +423,7 @@ async function handleProviderStep(
     await interaction.deferUpdate()
     ctx.providerPage = navPage
 
-    const getClient = await initializeOpencodeForDirectory(ctx.dir)
+    const getClient = await getOpencodeClient(ctx.dir)
     if (getClient instanceof Error) {
       await interaction.editReply({ content: getClient.message, components: [] })
       return
@@ -455,7 +467,17 @@ async function handleProviderStep(
     return
   }
 
-  const getClient = await initializeOpencodeForDirectory(ctx.dir)
+  if (shouldUseOmoRpc()) {
+    await interaction.deferUpdate()
+    await interaction.editReply({
+      content:
+        'omo RPC는 봇 내 인증을 지원하지 않습니다. omo CLI를 직접 사용하여 로그인하세요.',
+      components: [],
+    })
+    return
+  }
+
+  const getClient = await getOpencodeClient(ctx.dir)
   if (getClient instanceof Error) {
     await interaction.deferUpdate()
     await interaction.editReply({ content: getClient.message, components: [] })
@@ -540,6 +562,16 @@ async function handleMethodStep(
   value: string,
   step: StepMethod,
 ): Promise<void> {
+  if (shouldUseOmoRpc()) {
+    await interaction.deferUpdate()
+    await interaction.editReply({
+      content:
+        'omo RPC는 봇 내 인증을 지원하지 않습니다. omo CLI를 직접 사용하여 로그인하세요.',
+      components: [],
+    })
+    return
+  }
+
   const methodIndex = parseInt(value, 10)
   const method = step.methods[methodIndex]
   if (!method) {
@@ -609,6 +641,14 @@ async function showNextStep(
   if (ctx.stepIndex >= ctx.steps.length) {
     // All steps done — proceed to action
     if (ctx.methodType === 'api') {
+      if (shouldUseOmoRpc()) {
+        await interaction.editReply({
+          content:
+            'omo RPC는 봇 내 인증을 지원하지 않습니다. omo CLI를 직접 사용하여 로그인하세요.',
+          components: [],
+        })
+        return
+      }
       // We're deferred, so show a button that opens the API key modal
       const button = new ButtonBuilder()
         .setCustomId(`login_apikey_btn:${hash}`)
@@ -621,6 +661,14 @@ async function showNextStep(
         ],
       })
     } else {
+      if (shouldUseOmoRpc()) {
+        await interaction.editReply({
+          content:
+            'omo RPC는 봇 내 OAuth 인증을 지원하지 않습니다. omo CLI를 직접 실행하여 로그인을 완료한 뒤 다시 시도하세요.',
+          components: [],
+        })
+        return
+      }
       await startOAuthFlow(interaction, ctx, hash)
     }
     return
@@ -885,6 +933,16 @@ export async function handleOAuthCodeModalSubmit(
     return
   }
 
+  if (shouldUseOmoRpc()) {
+    await interaction.deferUpdate()
+    await interaction.editReply({
+      content:
+        'omo RPC는 봇 내 OAuth 인증을 지원하지 않습니다. omo CLI를 직접 실행하여 로그인을 완료한 뒤 다시 시도하세요.',
+      components: [],
+    })
+    return
+  }
+
   await interaction.deferUpdate()
 
   const hash = interaction.customId.replace('login_oauth_code:', '')
@@ -908,7 +966,7 @@ export async function handleOAuthCodeModalSubmit(
   }
 
   try {
-    const getClient = await initializeOpencodeForDirectory(ctx.dir)
+    const getClient = await getOpencodeClient(ctx.dir)
     if (getClient instanceof Error) {
       await interaction.editReply({
         content: getClient.message,
@@ -962,6 +1020,15 @@ export async function handleApiKeyModalSubmit(
     return
   }
 
+  if (shouldUseOmoRpc()) {
+    await interaction.reply({
+      content:
+        'omo RPC는 봇 내 인증을 지원하지 않습니다. omo CLI를 직접 사용하여 로그인하세요.',
+      flags: MessageFlags.Ephemeral,
+    })
+    return
+  }
+
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   const hash = interaction.customId.replace('login_apikey:', '')
@@ -982,7 +1049,7 @@ export async function handleApiKeyModalSubmit(
   }
 
   try {
-    const getClient = await initializeOpencodeForDirectory(ctx.dir)
+    const getClient = await getOpencodeClient(ctx.dir)
     if (getClient instanceof Error) {
       await interaction.editReply({ content: getClient.message })
       return
@@ -1016,6 +1083,15 @@ async function startOAuthFlow(
   ctx: LoginContext,
   hash: string,
 ): Promise<void> {
+  if (shouldUseOmoRpc()) {
+    await interaction.editReply({
+      content:
+        'omo RPC는 봇 내 OAuth 인증을 지원하지 않습니다. omo CLI를 직접 실행하여 로그인을 완료한 뒤 다시 시도하세요.',
+      components: [],
+    })
+    return
+  }
+
   if (!ctx.providerId || ctx.methodIndex === undefined) {
     await interaction.editReply({
       content: 'Invalid context for OAuth flow',
@@ -1025,7 +1101,7 @@ async function startOAuthFlow(
   }
 
   try {
-    const getClient = await initializeOpencodeForDirectory(ctx.dir)
+    const getClient = await getOpencodeClient(ctx.dir)
     if (getClient instanceof Error) {
       await interaction.editReply({
         content: getClient.message,

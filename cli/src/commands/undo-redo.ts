@@ -10,6 +10,8 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { CommandContext } from './types.js'
 import { getThreadSession } from '../database.js'
 import { getOpencodeClient, initializeOpencodeForDirectory } from '../opencode.js'
+import { getOmoRpcOpencodeClient } from '../omo-bridge/rpc-opencode-client.js'
+import { shouldUseOmoRpc } from '../omo-bridge/rpc-session.js'
 import {
   resolveWorkingDirectory,
   SILENT_MESSAGE_FLAGS,
@@ -17,6 +19,13 @@ import {
 import { createLogger, LogPrefix } from '../logger.js'
 
 const logger = createLogger(LogPrefix.UNDO_REDO)
+
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: unknown }).message)
+  }
+  return JSON.stringify(error)
+}
 
 async function waitForSessionIdle({
   client,
@@ -31,7 +40,10 @@ async function waitForSessionIdle({
 }): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const statusResponse = await client.session.status({ directory })
+    const statusResponse = await client.session.status({
+      directory,
+      sessionID: sessionId,
+    } as Parameters<OpencodeClient['session']['status']>[0])
     const sessionStatus = statusResponse.data?.[sessionId]
     if (!sessionStatus || sessionStatus.type === 'idle') {
       return
@@ -96,24 +108,41 @@ export async function handleUndoCommand({
 
   await command.deferReply()
 
-  const serverResult = await initializeOpencodeForDirectory(projectDirectory)
-  if (serverResult instanceof Error) {
-    await command.editReply(`Failed to undo: ${serverResult.message}`)
-    return
-  }
+  const useOmoRpc = shouldUseOmoRpc()
 
-  try {
-    const client = getOpencodeClient(workingDirectory)
-    if (!client) {
+  let client: OpencodeClient | undefined
+  if (useOmoRpc) {
+    // omo RPC 경로에서는 OpenCode 서버를 절대 기동하지 않는다.
+    // rpc-opencode-client 셈이 session.revert/unrevert/messages/status를
+    // navigate_tree / get_messages / get_state로 매핑해 처리한다.
+    client = getOmoRpcOpencodeClient(workingDirectory)
+  } else {
+    const serverResult = await initializeOpencodeForDirectory(projectDirectory)
+    if (serverResult instanceof Error) {
+      await command.editReply(`Failed to undo: ${serverResult.message}`)
+      return
+    }
+    const resolvedClient = getOpencodeClient(workingDirectory)
+    if (!resolvedClient) {
       await command.editReply('Failed to get OpenCode client')
       return
     }
+    client = resolvedClient
+  }
+
+  try {
     // Fetch session to check existing revert state
     const sessionResponse = await client.session.get({
       sessionID: sessionId,
       directory: workingDirectory,
     })
     if (sessionResponse.error) {
+      if (useOmoRpc) {
+        await command.editReply(
+          `실행 취소에 실패했습니다: ${getErrorMessage(sessionResponse.error)}`,
+        )
+        return
+      }
       await command.editReply(`Failed to undo: ${JSON.stringify(sessionResponse.error)}`)
       return
     }
@@ -124,7 +153,8 @@ export async function handleUndoCommand({
     // so a missing key means idle.
     const statusResponse = await client.session.status({
       directory: workingDirectory,
-    })
+      sessionID: sessionId,
+    } as Parameters<OpencodeClient['session']['status']>[0])
     const sessionStatus = statusResponse.data?.[sessionId]
     if (sessionStatus && sessionStatus.type !== 'idle') {
       await client.session.abort({
@@ -145,12 +175,18 @@ export async function handleUndoCommand({
       directory: workingDirectory,
     })
     if (messagesResponse.error) {
+      if (useOmoRpc) {
+        await command.editReply(
+          `실행 취소에 실패했습니다: ${getErrorMessage(messagesResponse.error)}`,
+        )
+        return
+      }
       await command.editReply(`Failed to undo: ${JSON.stringify(messagesResponse.error)}`)
       return
     }
 
     if (!messagesResponse.data || messagesResponse.data.length === 0) {
-      await command.editReply('No messages to undo')
+      await command.editReply(useOmoRpc ? '실행 취소할 메시지가 없습니다' : 'No messages to undo')
       return
     }
 
@@ -167,7 +203,7 @@ export async function handleUndoCommand({
     })
 
     if (!targetUserMessage) {
-      await command.editReply('No messages to undo')
+      await command.editReply(useOmoRpc ? '실행 취소할 메시지가 없습니다' : 'No messages to undo')
       return
     }
 
@@ -181,6 +217,10 @@ export async function handleUndoCommand({
     // get cleaned up automatically on the next promptAsync() call via
     // SessionRevert.cleanup(). The model only sees messages before the revert
     // point when processing the next prompt.
+    //
+    // Under omo RPC, session.revert() is the shim in rpc-opencode-client.ts,
+    // which maps this call onto the classic RPC `navigate_tree` request
+    // instead of touching an OpenCode server.
     logger.log(`[UNDO] session.revert start messageId=${revertMessageId}`)
     let response = await client.session.revert({
       sessionID: sessionId,
@@ -204,6 +244,12 @@ export async function handleUndoCommand({
       })
       logger.log(`[UNDO] retry revert done error=${Boolean(response.error)}`)
       if (response.error) {
+        if (useOmoRpc) {
+          await command.editReply(
+            `실행 취소에 실패했습니다: ${getErrorMessage(response.error)}`,
+          )
+          return
+        }
         await command.editReply(
           `Failed to undo: ${JSON.stringify(response.error)}`,
         )
@@ -215,12 +261,22 @@ export async function handleUndoCommand({
       ? `\n\`\`\`diff\n${response.data.revert.diff.slice(0, 1500)}\n\`\`\``
       : ''
 
-    await command.editReply(`Undone - reverted last assistant message${diffInfo}`)
+    await command.editReply(
+      useOmoRpc
+        ? `실행 취소 완료 - 마지막 어시스턴트 메시지를 되돌렸습니다${diffInfo}`
+        : `Undone - reverted last assistant message${diffInfo}`,
+    )
     logger.log(
       `Session ${sessionId} reverted at message ${revertMessageId}`,
     )
   } catch (error) {
     logger.error('[UNDO] Error:', error)
+    if (useOmoRpc) {
+      await command.editReply(
+        `실행 취소에 실패했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+      )
+      return
+    }
     await command.editReply(
       `Failed to undo: ${error instanceof Error ? error.message : 'Unknown error'}`,
     )
@@ -281,40 +337,62 @@ export async function handleRedoCommand({
 
   await command.deferReply()
 
-  const serverResult = await initializeOpencodeForDirectory(projectDirectory)
-  if (serverResult instanceof Error) {
-    await command.editReply(`Failed to redo: ${serverResult.message}`)
-    return
-  }
+  const useOmoRpc = shouldUseOmoRpc()
 
-  try {
-    const client = getOpencodeClient(workingDirectory)
-    if (!client) {
+  let client: OpencodeClient | undefined
+  if (useOmoRpc) {
+    // omo RPC 경로에서는 OpenCode 서버를 절대 기동하지 않는다.
+    // rpc-opencode-client 셈이 session.revert/unrevert/messages/status를
+    // navigate_tree / get_messages / get_state로 매핑해 처리한다.
+    client = getOmoRpcOpencodeClient(workingDirectory)
+  } else {
+    const serverResult = await initializeOpencodeForDirectory(projectDirectory)
+    if (serverResult instanceof Error) {
+      await command.editReply(`Failed to redo: ${serverResult.message}`)
+      return
+    }
+    const resolvedClient = getOpencodeClient(workingDirectory)
+    if (!resolvedClient) {
       await command.editReply('Failed to get OpenCode client')
       return
     }
+    client = resolvedClient
+  }
 
+  try {
     // Fetch session to check existing revert state
     const sessionResponse = await client.session.get({
       sessionID: sessionId,
       directory: workingDirectory,
     })
     if (sessionResponse.error) {
+      if (useOmoRpc) {
+        await command.editReply(
+          `다시 실행에 실패했습니다: ${getErrorMessage(sessionResponse.error)}`,
+        )
+        return
+      }
       await command.editReply(`Failed to redo: ${JSON.stringify(sessionResponse.error)}`)
       return
     }
 
     const revertMessageID = sessionResponse.data?.revert?.messageID
     if (!revertMessageID) {
-      await command.editReply('Nothing to redo - no previous undo found')
+      await command.editReply(
+        useOmoRpc ? '다시 실행할 이전 실행 취소 기록이 없습니다' : 'Nothing to redo - no previous undo found',
+      )
       return
     }
 
     // Abort if session is busy before reverting/unreverting — both enforce
-    // assertNotBusy in OpenCode and would fail with "Session is busy"
+    // assertNotBusy in OpenCode and would fail with "Session is busy".
+    // Under omo RPC this routes through the same shim (session.abort ->
+    // client.request('abort'), session.status -> client.request('get_state')),
+    // so busy-abort semantics still hold without booting OpenCode.
     const redoStatusResponse = await client.session.status({
       directory: workingDirectory,
-    })
+      sessionID: sessionId,
+    } as Parameters<OpencodeClient['session']['status']>[0])
     const redoSessionStatus = redoStatusResponse.data?.[sessionId]
     if (redoSessionStatus && redoSessionStatus.type !== 'idle') {
       await client.session.abort({
@@ -342,6 +420,12 @@ export async function handleRedoCommand({
       directory: workingDirectory,
     })
     if (messagesResponse.error) {
+      if (useOmoRpc) {
+        await command.editReply(
+          `다시 실행에 실패했습니다: ${getErrorMessage(messagesResponse.error)}`,
+        )
+        return
+      }
       await command.editReply(`Failed to redo: ${JSON.stringify(messagesResponse.error)}`)
       return
     }
@@ -353,18 +437,28 @@ export async function handleRedoCommand({
     })
 
     if (!nextMessage) {
-      // No more messages after revert point — fully unrevert
+      // No more messages after revert point — fully unrevert.
+      // Under omo RPC, session.unrevert() maps onto get_messages + navigate_tree
+      // to the latest message id (forward to the tip of history).
       const response = await client.session.unrevert({
         sessionID: sessionId,
         directory: workingDirectory,
       })
       if (response.error) {
+        if (useOmoRpc) {
+          await command.editReply(
+            `다시 실행에 실패했습니다: ${getErrorMessage(response.error)}`,
+          )
+          return
+        }
         await command.editReply(
           `Failed to redo: ${JSON.stringify(response.error)}`,
         )
         return
       }
-      await command.editReply('Restored - session fully back to previous state')
+      await command.editReply(
+        useOmoRpc ? '복원 완료 - 세션이 이전 상태로 완전히 돌아갔습니다' : 'Restored - session fully back to previous state',
+      )
       logger.log(`Session ${sessionId} unrevert completed`)
       return
     }
@@ -377,16 +471,28 @@ export async function handleRedoCommand({
     })
 
     if (response.error) {
+      if (useOmoRpc) {
+        await command.editReply(
+          `다시 실행에 실패했습니다: ${getErrorMessage(response.error)}`,
+        )
+        return
+      }
       await command.editReply(
         `Failed to redo: ${JSON.stringify(response.error)}`,
       )
       return
     }
 
-    await command.editReply('Restored one step forward')
+    await command.editReply(useOmoRpc ? '한 단계 앞으로 복원했습니다' : 'Restored one step forward')
     logger.log(`Session ${sessionId} redo: moved revert to ${nextMessage.info.id}`)
   } catch (error) {
     logger.error('[REDO] Error:', error)
+    if (useOmoRpc) {
+      await command.editReply(
+        `다시 실행에 실패했습니다: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+      )
+      return
+    }
     await command.editReply(
       `Failed to redo: ${error instanceof Error ? error.message : 'Unknown error'}`,
     )

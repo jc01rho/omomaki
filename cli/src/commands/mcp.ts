@@ -21,6 +21,8 @@ import {
   SILENT_MESSAGE_FLAGS,
 } from '../discord-utils.js'
 import { createLogger, LogPrefix } from '../logger.js'
+import { shouldUseOmoRpc } from '../omo-bridge/rpc-session.js'
+import { getOmoRpcOpencodeClient } from '../omo-bridge/rpc-opencode-client.js'
 
 const logger = createLogger(LogPrefix.MCP)
 
@@ -122,6 +124,63 @@ export async function handleMcpCommand({
 
   await command.deferReply({ flags: MessageFlags.Ephemeral | SILENT_MESSAGE_FLAGS })
 
+  // omo RPC 경로에서는 OpenCode 서버를 절대 기동하지 않는다.
+  // rpc-opencode-client shim의 mcp.status는 get_loaded_surfaces → {[name]:{status}} 매핑으로 처리한다.
+  if (shouldUseOmoRpc()) {
+    const omoClient = getOmoRpcOpencodeClient(projectDirectory)
+    const { data, error } = await omoClient.mcp.status({
+      directory: projectDirectory,
+    })
+
+    if (error || !data) {
+      await command.editReply({
+        content: 'Failed to fetch MCP server status.',
+      })
+      return
+    }
+
+    const servers = Object.entries(data)
+    if (servers.length === 0) {
+      await command.editReply({
+        content:
+          "No MCP servers configured for this project.\nAdd MCP servers in your project's `opencode.json` configuration.",
+      })
+      return
+    }
+
+    const lines = servers.map(([name, info]) => {
+      return formatServerLine({ name, status: info.status, error: getStatusError(info) })
+    })
+
+    const content = `**MCP Servers** (project-wide)\n${lines.join('\n')}`
+
+    const contextHash = crypto.randomBytes(8).toString('hex')
+    pendingMcpContexts.set(contextHash, projectDirectory)
+    setTimeout(() => {
+      pendingMcpContexts.delete(contextHash)
+    }, MCP_CONTEXT_TTL_MS)
+
+    const options = servers.map(([name, info]) => ({
+      label: name.slice(0, 100),
+      value: name.slice(0, 100),
+      description: `${formatStatusLabel(info.status)} — click to ${toggleActionLabel(info.status)}`.slice(0, 100),
+    }))
+
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId(`mcp_toggle:${contextHash}`)
+      .setPlaceholder('Select MCP server to toggle')
+      .addOptions(options.slice(0, 25))
+
+    const actionRow =
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu)
+
+    await command.editReply({
+      content,
+      components: [actionRow],
+    })
+    return
+  }
+
   const getClient = await initializeOpencodeForDirectory(projectDirectory)
   if (getClient instanceof Error) {
     await command.editReply({
@@ -146,7 +205,7 @@ export async function handleMcpCommand({
   if (servers.length === 0) {
     await command.editReply({
       content:
-        'No MCP servers configured for this project.\nAdd MCP servers in your project\'s `opencode.json` configuration.',
+        "No MCP servers configured for this project.\nAdd MCP servers in your project's `opencode.json` configuration.",
     })
     return
   }
@@ -215,6 +274,48 @@ export async function handleMcpSelectMenu(
   }
 
   pendingMcpContexts.delete(contextHash)
+
+  // omo RPC 환경에서는 실시간 MCP connect/disconnect를 지원하지 않는다.
+  // shim의 mcp.connect/disconnect는 fail-closed errResult를 반환하므로,
+  // OpenCode 서버를 기동하는 fallback 없이 한글 안내로 종료한다.
+  if (shouldUseOmoRpc()) {
+    const omoClient = getOmoRpcOpencodeClient(projectDirectory)
+    const { data: statusData, error: statusError } = await omoClient.mcp.status({
+      directory: projectDirectory,
+    })
+
+    if (statusError || !statusData) {
+      await interaction.editReply({
+        content: 'Failed to refresh MCP server status.',
+        components: [],
+      })
+      return
+    }
+
+    if (!statusData[serverName]) {
+      await interaction.editReply({
+        content: `Server **${serverName}** not found.`,
+        components: [],
+      })
+      return
+    }
+
+    const serverInfo = statusData[serverName] as McpStatus
+
+    // omo RPC는 실시간 연결/해제를 지원하지 않는다. shim의 connect/disconnect는 errResult 반환.
+    const isConnected = serverInfo.status === 'connected'
+    if (isConnected) {
+      await omoClient.mcp.disconnect({ name: serverName, directory: projectDirectory })
+    } else {
+      await omoClient.mcp.connect({ name: serverName, directory: projectDirectory })
+    }
+
+    await interaction.editReply({
+      content: `**${serverName}** 서버는 omo RPC 환경에서 실시간으로 연결하거나 해제할 수 없습니다. 프로젝트의 opencode.json에서 MCP 설정을 직접 수정해주세요.`,
+      components: [],
+    })
+    return
+  }
 
   const getClient = await initializeOpencodeForDirectory(projectDirectory)
   if (getClient instanceof Error) {

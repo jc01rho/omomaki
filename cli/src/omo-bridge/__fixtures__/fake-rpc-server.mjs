@@ -14,7 +14,10 @@
 // - abort {id}: success + agent_settled.
 // - get_protocol_info {id}: classic mode info.
 // - get_state {id}: {isSettled:true}.
-// - anything else once started: {success:true, echoed:type}.
+// - get_messages {id}: one user message.
+// - get_loaded_surfaces {id}: MCP-like status payload.
+// - navigate_tree {id, targetId}: success + {cancelled:false} (used by
+//   session.revert/unrevert shim mapping).
 
 import { StringDecoder } from 'node:string_decoder'
 
@@ -120,6 +123,24 @@ function handleRecord(line) {
     return
   }
 
+  if (type === 'get_loaded_surfaces') {
+    send({
+      id,
+      type: 'response',
+      command: 'get_loaded_surfaces',
+      success: true,
+      data: {
+        mcpServers: [
+          { name: 'connected-server', status: 'connected' },
+          { name: 'enabled-server', status: 'enabled' },
+          { name: 'disabled-server', status: 'disabled' },
+          { name: 'failed-server', status: 'failed' },
+        ],
+      },
+    })
+    return
+  }
+
   if (type === 'get_messages') {
     send({
       id,
@@ -140,7 +161,7 @@ function handleRecord(line) {
     return
   }
 
-  if (type === 'compact' || type === 'clone' || type === 'fork') {
+  if (type === 'compact' || type === 'clone' || type === 'fork' || type === 'navigate_tree') {
     send({ id, type: 'response', command: type, success: true, data: { cancelled: false } })
     return
   }

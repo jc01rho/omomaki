@@ -269,6 +269,49 @@ async function withRpcClient<T>(
   return run(started, ephemeralThread)
 }
 
+async function getOrStartRpcClientForThread(
+  directory: string,
+  threadId: string,
+): Promise<OmoRpcClient | null> {
+  const live = getLiveRpcClient(threadId)
+  if (live) {
+    return live
+  }
+
+  const handle = await getOrStartRpcSession({
+    threadId,
+    cwd: directory,
+    dispatch: async () => {},
+  })
+  const started = getLiveRpcClient(threadId)
+  void handle
+  return started
+}
+
+function getMessageIdFromRpcMessage(raw: unknown): string {
+  const record = isRecord(raw) ? raw : {}
+  const nested = isRecord(record.message) ? record.message : record
+  return asString(nested.id ?? nested.messageId)
+}
+
+function getLatestMessageId(payload: unknown): string {
+  const list = isRecord(payload) ? asArray(payload.messages) : asArray(payload)
+  const last = list.at(-1)
+  return getMessageIdFromRpcMessage(last)
+}
+
+function unwrapErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function invalidSessionError(method: string): string {
+  return `${method}: no thread bound for this session`
+}
+
+function failedToStartThread(method: string, threadId: string): string {
+  return `${method}: failed to start rpc client for thread ${threadId}`
+}
+
 function createShim(directory: string): OpencodeClient {
   const session = {
     async list() {
@@ -372,17 +415,69 @@ function createShim(directory: string): OpencodeClient {
       })
       return okResult(data)
     },
-    async revert() {
-      return errResult('omo rpc has no session.revert; use /compact or a new thread')
+    async revert(params: { sessionID?: string; messageID?: string } = {}) {
+      const sessionID = params.sessionID
+      const messageID = params.messageID
+      if (!sessionID || !messageID) {
+        return errResult('sessionID and messageID required for session.revert')
+      }
+      const threadId = await lookupThreadId(sessionID)
+      if (!threadId) {
+        return errResult(invalidSessionError('session.revert'))
+      }
+
+      const live = await getOrStartRpcClientForThread(directory, threadId)
+      if (!live) {
+        return errResult(failedToStartThread('session.revert', threadId))
+      }
+
+      try {
+        await live.request('navigate_tree', { targetId: messageID })
+      } catch (error) {
+        return errResult(`session.revert failed: ${unwrapErrorMessage(error)}`)
+      }
+
+      return okResult({
+        ...stubSession({ id: sessionID, directory }),
+        revert: { messageID },
+      })
     },
-    async unrevert() {
-      return errResult('omo rpc has no session.unrevert; use /compact or a new thread')
+    async unrevert(params: { sessionID?: string } = {}) {
+      const sessionID = params.sessionID
+      if (!sessionID) {
+        return errResult('sessionID required for session.unrevert')
+      }
+
+      const threadId = await lookupThreadId(sessionID)
+      if (!threadId) {
+        return errResult(invalidSessionError('session.unrevert'))
+      }
+
+      const live = await getOrStartRpcClientForThread(directory, threadId)
+      if (!live) {
+        return errResult(failedToStartThread('session.unrevert', threadId))
+      }
+
+      try {
+        const messages = await live.request('get_messages')
+        const targetId = getLatestMessageId(messages)
+        if (!targetId) {
+          return errResult(
+            'session.unrevert failed: unable to resolve latest message for forward navigation',
+          )
+        }
+        await live.request('navigate_tree', { targetId })
+      } catch (error) {
+        return errResult(`session.unrevert failed: ${unwrapErrorMessage(error)}`)
+      }
+
+      return okResult(stubSession({ id: sessionID, directory }))
     },
     async share() {
-      return errResult('omo rpc does not support session.share')
+      return errResult('session.share is not supported on omo RPC')
     },
     async trim() {
-      return errResult('omo rpc does not support session.trim')
+      return errResult('session.trim is not supported on omo RPC')
     },
   }
 
@@ -426,11 +521,13 @@ function createShim(directory: string): OpencodeClient {
       return okResult(data)
     },
     async auth() {
-      return okResult({})
+      return errResult('provider.auth is not supported on omo RPC')
     },
     oauth: {
       async authorize() {
-        return errResult('omo rpc login uses login_start, not provider.oauth')
+        return errResult(
+          'provider.oauth.authorize is not supported on omo RPC; use omo login_start instead',
+        )
       },
     },
   }
@@ -495,10 +592,10 @@ function createShim(directory: string): OpencodeClient {
       return okResult(data)
     },
     async connect() {
-      return errResult('omo rpc does not support mcp.connect')
+      return errResult('mcp.connect is not supported on omo RPC')
     },
     async disconnect() {
-      return errResult('omo rpc does not support mcp.disconnect')
+      return errResult('mcp.disconnect is not supported on omo RPC')
     },
   }
 
