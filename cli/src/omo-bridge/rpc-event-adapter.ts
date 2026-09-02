@@ -9,6 +9,7 @@ export type RpcStreamEvent = {
 export type RpcTurnAdapter = {
   startTurn(prompt: string, nowMs: number): readonly OpenCodeEvent[]
   feed(event: RpcStreamEvent, nowMs: number): readonly OpenCodeEvent[]
+  abort(nowMs: number): readonly OpenCodeEvent[]
 }
 
 type AdapterState = {
@@ -272,6 +273,11 @@ export function createRpcTurnAdapter(sessionId: string): RpcTurnAdapter {
     return events
   }
 
+  const abortTurn = (): OpenCodeEvent[] => {
+    state.completed = true
+    return [statusEvent(sessionId, 'idle'), idleEvent(sessionId)]
+  }
+
   return {
     startTurn(_prompt: string, nowMs: number): readonly OpenCodeEvent[] {
       state.userMessageId = newId('msg')
@@ -346,6 +352,9 @@ export function createRpcTurnAdapter(sessionId: string): RpcTurnAdapter {
         default:
           return []
       }
+    },
+    abort(_nowMs: number): readonly OpenCodeEvent[] {
+      return abortTurn()
     },
   }
 }

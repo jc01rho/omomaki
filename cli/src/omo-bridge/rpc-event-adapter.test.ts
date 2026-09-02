@@ -73,4 +73,21 @@ describe('createRpcTurnAdapter', () => {
     })
     expect(completed).toBeDefined()
   })
+
+  test('abort emits idle without a natural-completion finish', () => {
+    const adapter = createRpcTurnAdapter('omo_session_abort')
+    adapter.startTurn('hello', 1000)
+    adapter.feed({ type: 'text_delta', delta: 'partial' }, 1001)
+    const aborted = adapter.abort(1002)
+    expect(aborted.some((event) => event.type === 'session.idle')).toBe(true)
+    const completedNatural = aborted.find((event) => {
+      return (
+        event.type === 'message.updated' &&
+        event.properties.info.role === 'assistant' &&
+        event.properties.info.finish === 'stop' &&
+        typeof event.properties.info.time.completed === 'number'
+      )
+    })
+    expect(completedNatural).toBeUndefined()
+  })
 })

@@ -17,6 +17,14 @@ export type RpcSessionSpawn = {
   readonly args: readonly string[]
 }
 
+export type RpcExtensionUiRequest = {
+  readonly id: string
+  readonly method: string
+  readonly title?: string
+  readonly message?: string
+  readonly timeout?: number
+}
+
 export type RpcSessionHandle = {
   readonly sessionId: string
   prompt(
@@ -31,6 +39,7 @@ export type RpcSessionHost = {
   readonly threadId: string
   readonly cwd: string
   dispatch(event: OpenCodeEvent): Promise<void>
+  onExtensionUiRequest?(request: RpcExtensionUiRequest): void
 }
 
 type LiveSession = {
@@ -42,6 +51,7 @@ type LiveSession = {
 }
 
 const sessions = new Map<string, LiveSession>()
+const sessionIdToThreadId = new Map<string, string>()
 
 let spawnOverride: RpcSessionSpawn | undefined
 
@@ -85,6 +95,56 @@ function resolveSpawn(cwd: string, sessionFile: string): RpcSessionSpawn {
   }
 }
 
+function eventId(): string {
+  return `evt_${crypto.randomUUID()}`
+}
+
+function permissionAskedEvent(opts: {
+  sessionId: string
+  request: RpcExtensionUiRequest
+}): OpenCodeEvent {
+  const message = opts.request.message ?? opts.request.title ?? 'tool'
+  return {
+    id: eventId(),
+    type: 'permission.asked',
+    properties: {
+      id: opts.request.id,
+      sessionID: opts.sessionId,
+      permission: opts.request.method || 'confirm',
+      patterns: [message],
+      metadata: {
+        title: opts.request.title,
+        message: opts.request.message,
+      },
+      always: [],
+    },
+  }
+}
+
+async function dispatchEvents(
+  live: LiveSession,
+  events: readonly OpenCodeEvent[],
+): Promise<void> {
+  live.dispatchChain = live.dispatchChain.then(async () => {
+    for (const next of events) {
+      await live.host.dispatch(next)
+    }
+  })
+  await live.dispatchChain
+}
+
+function forgetSession(threadId: string, sessionId: string): void {
+  sessions.delete(threadId)
+  sessionIdToThreadId.delete(sessionId)
+}
+
+async function stopLiveSession(live: LiveSession, threadId: string): Promise<void> {
+  const aborted = live.adapter.abort(Date.now())
+  await dispatchEvents(live, aborted).catch(() => {})
+  await live.client.stop()
+  forgetSession(threadId, live.sessionId)
+}
+
 function createHandle(live: LiveSession, threadId: string): RpcSessionHandle {
   return {
     sessionId: live.sessionId,
@@ -100,16 +160,20 @@ function createHandle(live: LiveSession, threadId: string): RpcSessionHandle {
         }
       })
       await live.dispatchChain
-      await live.client.prompt(text)
+      try {
+        await live.client.prompt(text)
+        await live.client.waitForSettled()
+      } catch {
+        // Abort/stop rejects in-flight waiters; idle was already synthesized.
+      }
       await live.dispatchChain
     },
     async abort(): Promise<void> {
-      await live.client.stop()
-      sessions.delete(threadId)
+      await stopLiveSession(live, threadId)
     },
     async stop(): Promise<void> {
       await live.client.stop()
-      sessions.delete(threadId)
+      forgetSession(threadId, live.sessionId)
     },
   }
 }
@@ -147,6 +211,20 @@ export async function getOrStartRpcSession(
         }
       })
     },
+    onExtensionUiRequest: (request) => {
+      const live = liveBox.current
+      if (live === undefined) {
+        return
+      }
+      const asked = permissionAskedEvent({
+        sessionId: live.sessionId,
+        request,
+      })
+      live.dispatchChain = live.dispatchChain.then(async () => {
+        await live.host.dispatch(asked)
+      })
+      live.host.onExtensionUiRequest?.(request)
+    },
   })
 
   const live: LiveSession = {
@@ -160,6 +238,7 @@ export async function getOrStartRpcSession(
 
   await client.start()
   sessions.set(host.threadId, live)
+  sessionIdToThreadId.set(sessionId, host.threadId)
   return createHandle(live, host.threadId)
 }
 
@@ -169,11 +248,34 @@ export async function stopRpcSession(threadId: string): Promise<void> {
     return
   }
   await existing.client.stop()
-  sessions.delete(threadId)
+  forgetSession(threadId, existing.sessionId)
 }
 
 export async function abortRpcSession(threadId: string): Promise<void> {
-  await stopRpcSession(threadId)
+  const existing = sessions.get(threadId)
+  if (existing === undefined) {
+    return
+  }
+  await stopLiveSession(existing, threadId)
+}
+
+export async function respondToRpcExtensionUi(opts: {
+  sessionId: string
+  requestId: string
+  confirmed: boolean
+}): Promise<boolean> {
+  const threadId = sessionIdToThreadId.get(opts.sessionId)
+  if (threadId === undefined) {
+    return false
+  }
+  const live = sessions.get(threadId)
+  if (live === undefined) {
+    return false
+  }
+  await live.client.respondToExtensionUi(opts.requestId, {
+    confirmed: opts.confirmed,
+  })
+  return true
 }
 
 export async function stopAllRpcSessions(): Promise<void> {

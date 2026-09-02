@@ -18,11 +18,56 @@ import {
 import crypto from 'node:crypto'
 import type { OpencodeClient, PermissionRequest } from '@opencode-ai/sdk/v2'
 import { getOpencodeClient } from '../opencode.js'
+import {
+  respondToRpcExtensionUi,
+  shouldUseOmoRpc,
+} from '../omo-bridge/rpc-session.js'
 import { getPermissionTimeoutMs } from '../config.js'
 import { NOTIFY_MESSAGE_FLAGS } from '../discord-utils.js'
 import { createLogger, LogPrefix } from '../logger.js'
 
 const logger = createLogger(LogPrefix.PERMISSIONS)
+
+async function replyPermissionRequests({
+  directory,
+  sessionId,
+  requestIds,
+  response,
+  timeoutMessage,
+}: {
+  directory: string
+  sessionId: string
+  requestIds: readonly string[]
+  response: 'once' | 'always' | 'reject'
+  timeoutMessage?: string
+}): Promise<void> {
+  if (shouldUseOmoRpc()) {
+    await Promise.all(
+      requestIds.map((requestId) => {
+        return respondToRpcExtensionUi({
+          sessionId,
+          requestId,
+          confirmed: response !== 'reject',
+        })
+      }),
+    )
+    return
+  }
+  const client = getOpencodeClient(directory)
+  if (!client) {
+    throw new Error('OpenCode server not found for directory')
+  }
+  await Promise.all(
+    requestIds.map((requestId) => {
+      return client.permission.reply({
+        requestID: requestId,
+        directory,
+        reply: response,
+        ...(timeoutMessage !== undefined ? { message: timeoutMessage } : {}),
+      })
+    }),
+  )
+}
 
 async function resumeSessionIfIdleAfterPermission({
   client,
@@ -170,34 +215,28 @@ export async function showPermissionButtons({
     if (!ctx) {
       return
     }
-    const client = getOpencodeClient(ctx.directory)
-    if (client) {
-      const requestIds = ctx.requestIds.length > 0
-        ? ctx.requestIds
-        : [ctx.permission.id]
-      const userId = ctx.thread.ownerId
-      const timeoutFeedback =
-        `Permission timed out — the user did not respond. They are probably away and not watching the session. ` +
-        `If this tool call is necessary for the core goal of this session, stop and mention the user with <@${userId}> asking them to grant permission. ` +
-        `If not, continue normally — work around it, skip the tool, or use an alternative approach.`
-      await Promise.all(
-        requestIds.map((requestId) => {
-          return client.permission.reply({
-            requestID: requestId,
-            directory: ctx.directory,
-            reply: 'reject',
-            message: timeoutFeedback,
-          })
-        }),
-      ).catch((error) => {
-        logger.error('Failed to auto-reject expired permission:', error)
-      })
-      const minutes = Math.round(ttlMs / 60_000)
-      updatePermissionMessage({
-        context: ctx,
-        status: `_Permission expired after ${minutes} minute${minutes !== 1 ? 's' : ''} and was rejected._`,
-      })
-    }
+    const requestIds = ctx.requestIds.length > 0
+      ? ctx.requestIds
+      : [ctx.permission.id]
+    const userId = ctx.thread.ownerId
+    const timeoutFeedback =
+      `Permission timed out — the user did not respond. They are probably away and not watching the session. ` +
+      `If this tool call is necessary for the core goal of this session, stop and mention the user with <@${userId}> asking them to grant permission. ` +
+      `If not, continue normally — work around it, skip the tool, or use an alternative approach.`
+    await replyPermissionRequests({
+      directory: ctx.directory,
+      sessionId: ctx.permission.sessionID,
+      requestIds,
+      response: 'reject',
+      timeoutMessage: timeoutFeedback,
+    }).catch((error) => {
+      logger.error('Failed to auto-reject expired permission:', error)
+    })
+    const minutes = Math.round(ttlMs / 60_000)
+    updatePermissionMessage({
+      context: ctx,
+      status: `_Permission expired after ${minutes} minute${minutes !== 1 ? 's' : ''} and was rejected._`,
+    })
   }, ttlMs).unref()
 
   const patternStr = compactPermissionPatterns(permission.patterns).join(', ')
@@ -297,26 +336,16 @@ export async function cancelPendingPermission(threadId: string): Promise<boolean
       continue
     }
 
-    const client = getOpencodeClient(pendingContext.directory)
-    if (!client) {
-      pendingPermissionContexts.set(pendingContext.contextHash, pendingContext)
-      logger.error('Failed to dismiss pending permission: OpenCode server not found')
-      continue
-    }
-
     const requestIds = pendingContext.requestIds.length > 0
       ? pendingContext.requestIds
       : [pendingContext.permission.id]
 
-    const result = await Promise.all(
-      requestIds.map((requestId) => {
-        return client.permission.reply({
-          requestID: requestId,
-          directory: pendingContext.directory,
-          reply: 'reject',
-        })
-      }),
-    ).then(() => {
+    const result = await replyPermissionRequests({
+      directory: pendingContext.directory,
+      sessionId: pendingContext.permission.sessionID,
+      requestIds,
+      response: 'reject',
+    }).then(() => {
       return 'ok' as const
     }).catch((error) => {
       pendingPermissionContexts.set(pendingContext.contextHash, pendingContext)
@@ -375,25 +404,22 @@ export async function handlePermissionButton(
   await interaction.deferUpdate()
 
   try {
-    const permClient = getOpencodeClient(context.directory)
-    if (!permClient) {
-      throw new Error('OpenCode server not found for directory')
-    }
     const requestIds =
       context.requestIds.length > 0
         ? context.requestIds
         : [context.permission.id]
-    await Promise.all(
-      requestIds.map((requestId) => {
-        return permClient.permission.reply({
-          requestID: requestId,
-          directory: context.directory,
-          reply: response,
-        })
-      }),
-    )
+    await replyPermissionRequests({
+      directory: context.directory,
+      sessionId: context.permission.sessionID,
+      requestIds,
+      response,
+    })
 
-    if (response !== 'reject') {
+    if (response !== 'reject' && !shouldUseOmoRpc()) {
+      const permClient = getOpencodeClient(context.directory)
+      if (!permClient) {
+        throw new Error('OpenCode server not found for directory')
+      }
       const resumed = await resumeSessionIfIdleAfterPermission({
         client: permClient,
         sessionId: context.permission.sessionID,
