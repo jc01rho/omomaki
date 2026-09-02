@@ -23,6 +23,8 @@ import { StringDecoder } from 'node:string_decoder'
 
 const decoder = new StringDecoder('utf8')
 let buffer = ''
+/** @type {let} busy flag toggled by set_busy for session.status tests. */
+let busy = false
 /** @type {Map<string, {id: string}>} */
 const pendingConfirms = new Map()
 
@@ -81,8 +83,18 @@ function handleRecord(line) {
       type: 'response',
       command: 'get_state',
       success: true,
-      data: { isSettled: true, followUpMessages: [], steerPrompt: null },
+      data: {
+        isSettled: !busy,
+        followUpMessages: [],
+        steerPrompt: null,
+      },
     })
+    return
+  }
+
+  if (type === 'set_busy') {
+    busy = true
+    send({ id, type: 'response', command: 'set_busy', success: true })
     return
   }
 
@@ -168,6 +180,12 @@ function handleRecord(line) {
 
   if (type === 'prompt') {
     const message = typeof frame.message === 'string' ? frame.message : ''
+    if (message.includes('set_busy')) {
+      busy = true
+    }
+    if (message.includes('set_idle')) {
+      busy = false
+    }
     if (message.includes('touch-denied')) {
       const confirmId = 'confirm-1'
       pendingConfirms.set(confirmId, { id })

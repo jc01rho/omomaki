@@ -1,6 +1,7 @@
 import path from 'node:path'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { getDb } from '../db.js'
+import { getThreadIdBySessionId } from '../database.js'
 import type { OmoRpcClient } from './rpc-client.js'
 import {
   getLiveRpcClient,
@@ -208,12 +209,7 @@ function mapRpcMessage(raw: unknown, sessionID: string, directory: string) {
 }
 
 async function lookupThreadId(sessionId: string): Promise<string | null> {
-  const db = await getDb()
-  const row = await db.query.thread_sessions.findFirst({
-    where: { session_id: sessionId },
-    columns: { thread_id: true },
-  })
-  return row?.thread_id ?? null
+  return (await getThreadIdBySessionId(sessionId)) ?? null
 }
 
 async function listBoundSessions(directory: string) {
@@ -238,21 +234,25 @@ async function withRpcClient<T>(
 ): Promise<T> {
   if (sessionId) {
     const threadId = await lookupThreadId(sessionId)
-    if (threadId) {
-      const live = getLiveRpcClient(threadId)
-      if (live) return run(live, threadId)
-      const handle = await getOrStartRpcSession({
-        threadId,
-        cwd: directory,
-        dispatch: async () => {},
-      })
-      const started = getLiveRpcClient(threadId)
-      if (!started) {
-        throw new Error(`omo rpc session missing after start for ${threadId}`)
-      }
-      void handle
-      return run(started, threadId)
+    if (!threadId) {
+      // /resume may bind a session to a new thread; an unbound session cannot
+      // be routed to any omo process. Fail closed rather than spawning an
+      // ephemeral metadata session that would answer against the wrong thread.
+      throw new Error(`no thread bound for session ${sessionId}`)
     }
+    const live = getLiveRpcClient(threadId)
+    if (live) return run(live, threadId)
+    const handle = await getOrStartRpcSession({
+      threadId,
+      cwd: directory,
+      dispatch: async () => {},
+    })
+    const started = getLiveRpcClient(threadId)
+    if (!started) {
+      throw new Error(`omo rpc session missing after start for ${threadId}`)
+    }
+    void handle
+    return run(started, threadId)
   }
 
   const ephemeralThread = `rpc-meta-${directory.replace(/[^a-zA-Z0-9._-]/g, '_').slice(-24)}`
@@ -312,6 +312,10 @@ function failedToStartThread(method: string, threadId: string): string {
   return `${method}: failed to start rpc client for thread ${threadId}`
 }
 
+// Revert cursor per session id. persist the last /undo navigate_tree target so
+// /redo and a second /undo can resolve the current revert point from get().
+const revertCursors = new Map<string, { messageID: string }>()
+
 function createShim(directory: string): OpencodeClient {
   const session = {
     async list() {
@@ -322,7 +326,12 @@ function createShim(directory: string): OpencodeClient {
       if (!sessionID) return errResult('sessionID required')
       const threadId = await lookupThreadId(sessionID)
       if (!threadId) return errResult('Session not found')
-      return okResult(stubSession({ id: sessionID, directory }))
+      const revert = revertCursors.get(sessionID)
+      return okResult(
+        revert
+          ? { ...stubSession({ id: sessionID, directory }), revert }
+          : stubSession({ id: sessionID, directory }),
+      )
     },
     async create() {
       const threadId = `created-${Date.now()}`
@@ -361,7 +370,9 @@ function createShim(directory: string): OpencodeClient {
       if (!params.sessionID) return okResult({})
       const data = await withRpcClient(directory, params.sessionID, async (client) => {
         const state = await client.request('get_state')
-        const streaming = isRecord(state) && state.isStreaming === true
+        const streaming =
+          isRecord(state) &&
+          (state.isStreaming === true || state.isSettled === false)
         return {
           [params.sessionID as string]: {
             type: streaming ? 'busy' : 'idle',
@@ -437,6 +448,8 @@ function createShim(directory: string): OpencodeClient {
         return errResult(`session.revert failed: ${unwrapErrorMessage(error)}`)
       }
 
+      revertCursors.set(sessionID, { messageID })
+
       return okResult({
         ...stubSession({ id: sessionID, directory }),
         revert: { messageID },
@@ -471,6 +484,7 @@ function createShim(directory: string): OpencodeClient {
         return errResult(`session.unrevert failed: ${unwrapErrorMessage(error)}`)
       }
 
+      revertCursors.delete(sessionID)
       return okResult(stubSession({ id: sessionID, directory }))
     },
     async share() {

@@ -1,3 +1,5 @@
+type OpencodeClientType = import('@opencode-ai/sdk/v2').OpencodeClient
+
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
@@ -186,6 +188,132 @@ describe('omo rpc opencode client shim', () => {
     )
     expect(connected.data).toBeUndefined()
     expect(connected.error).toBeTruthy()
+    await restartOmoRpcRuntime()
+  })
+
+  test('revert persists the cursor so session.get exposes it (redo works)', async () => {
+    const dataDir = path.join(
+      process.cwd(),
+      'tmp',
+      `omo-rpc-shim-revert-roundtrip-${process.pid}`,
+    )
+    setDataDir(dataDir)
+    await initDatabase()
+    setRpcSessionSpawnForTests({
+      command: process.execPath,
+      args: [FIXTURE_PATH],
+    })
+    const db = await getDb()
+    await db
+      .insert(schema.thread_sessions)
+      .values({ thread_id: 'thread-revert-rt', session_id: 'session-revert-rt' })
+      .onConflictDoNothing({ target: schema.thread_sessions.thread_id })
+
+    const client = getOmoRpcOpencodeClient(process.cwd())
+    const reverted = await withTimeout(
+      client.session.revert({
+        sessionID: 'session-revert-rt',
+        messageID: 'msg_target',
+      }),
+      'session.revert',
+    )
+    expect(reverted.error).toBeUndefined()
+
+    const fetched = await withTimeout(
+      client.session.get({ sessionID: 'session-revert-rt' }),
+      'session.get after revert',
+    )
+    expect(fetched.error).toBeUndefined()
+    expect(fetched.data?.revert?.messageID).toBe('msg_target')
+
+    const unrev = await withTimeout(
+      client.session.unrevert({ sessionID: 'session-revert-rt' }),
+      'session.unrevert',
+    )
+    expect(unrev.error).toBeUndefined()
+
+    const afterUnrevert = await withTimeout(
+      client.session.get({ sessionID: 'session-revert-rt' }),
+      'session.get after unrevert',
+    )
+    expect(afterUnrevert.error).toBeUndefined()
+    expect(afterUnrevert.data?.revert).toBeUndefined()
+    await restartOmoRpcRuntime()
+  })
+
+  test('session.status reports busy when get_state isSettled is false', async () => {
+    const dataDir = path.join(
+      process.cwd(),
+      'tmp',
+      `omo-rpc-shim-status-busy-${process.pid}`,
+    )
+    setDataDir(dataDir)
+    await initDatabase()
+    setRpcSessionSpawnForTests({
+      command: process.execPath,
+      args: [FIXTURE_PATH],
+    })
+    const db = await getDb()
+    await db
+      .insert(schema.thread_sessions)
+      .values({ thread_id: 'thread-status-busy', session_id: 'session-status-busy' })
+      .onConflictDoNothing({ target: schema.thread_sessions.thread_id })
+
+    const client = getOmoRpcOpencodeClient(process.cwd())
+    // Idle by default
+    const statusParams = {
+      sessionID: 'session-status-busy',
+      directory: process.cwd(),
+    } as Parameters<OpencodeClientType['session']['status']>[0]
+    const idle = await withTimeout(
+      client.session.status(statusParams),
+      'session.status idle',
+    )
+    expect(idle.error).toBeUndefined()
+    expect(idle.data?.['session-status-busy']?.type).toBe('idle')
+
+    // Flip isSettled=false via a set_busy prompt routed through the same session
+    await withTimeout(
+      client.session.command({ sessionID: 'session-status-busy', command: 'set_busy' }),
+      'set busy',
+    ).catch(() => {})
+    const busyStatus = await withTimeout(
+      client.session.status(statusParams),
+      'session.status busy',
+    )
+    expect(busyStatus.error).toBeUndefined()
+    expect(busyStatus.data?.['session-status-busy']?.type).toBe('busy')
+    await restartOmoRpcRuntime()
+  })
+
+  test('session.messages and session.status fail closed for an unbound session', async () => {
+    const dataDir = path.join(
+      process.cwd(),
+      'tmp',
+      `omo-rpc-shim-unbound-failclosed-${process.pid}`,
+    )
+    setDataDir(dataDir)
+    await initDatabase()
+    setRpcSessionSpawnForTests({
+      command: process.execPath,
+      args: [FIXTURE_PATH],
+    })
+    const client = getOmoRpcOpencodeClient(process.cwd())
+
+    const messagesParams = {
+      sessionID: 'no-such-session',
+      directory: process.cwd(),
+    } as Parameters<OpencodeClientType['session']['messages']>[0]
+    await expect(
+      withTimeout(client.session.messages(messagesParams), 'messages'),
+    ).rejects.toThrow(/no thread bound/)
+    const statusParams = {
+      sessionID: 'no-such-session',
+      directory: process.cwd(),
+    } as Parameters<OpencodeClientType['session']['status']>[0]
+    await expect(
+      withTimeout(client.session.status(statusParams), 'status'),
+    ).rejects.toThrow(/no thread bound/)
     await restartOmoRpcRuntime()
   })
 })
