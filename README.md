@@ -1,19 +1,19 @@
 <div align='center' class='hidden'>
     <br/>
     <br/>
-    <h3>kimaki</h3>
+    <h3>omomaki</h3>
     <p>A collaborative agent orchestrator, inside Discord</p>
     <br/>
     <br/>
 </div>
 
-Kimaki is a **collaborative agent orchestrator** that lets you drive coding agents from Discord. Each Discord **channel is a project**, each **thread is a coding session**. Send a message, an AI agent edits code on your machine.
+**omomaki** is a **collaborative agent orchestrator** that lets you drive coding agents from Discord. Each Discord **channel is a project**, each **thread is a coding session**. Send a message, an AI agent edits code on your machine.
 
 You can try the bot in the [Kimaki Discord Server](https://discord.gg/qz3hapKcMM) to see what it can do.
 
 ## Quick Start
 
-Kimaki runs on your machine and connects to Discord. You need **Node.js 18+** (or [Bun](https://bun.sh)) and a **Discord server you own** (create one with the **+** button in the Discord sidebar if you don't have one).
+omomaki runs on your machine and connects to Discord. You need **Node.js 18+** (or [Bun](https://bun.sh)) and a **Discord server you own** (create one with the **+** button in the Discord sidebar if you don't have one).
 
 ```bash
 npx -y omomaki@latest
@@ -38,9 +38,9 @@ The CLI walks you through the whole setup in about a minute:
 
 Just run the command and authorize the bot in your existing server. You can add the bot to more servers later with `kimaki bot install-url`.
 
-## What is Kimaki?
+## What is omomaki?
 
-Kimaki turns Discord into the control surface for your coding agents. It connects to [omo](https://github.com/code-yeongyu/oh-my-openagent), a coding agent runtime, and maps your work onto Discord's natural structure:
+omomaki turns Discord into the control surface for your coding agents. It connects to [omo](https://github.com/code-yeongyu/oh-my-openagent), a coding agent runtime, and maps your work onto Discord's natural structure:
 
 - **Channels are projects.** Each channel is linked to a project directory on your machine.
 - **Threads are sessions.** Every message you send starts a thread that maps to one agent session.
