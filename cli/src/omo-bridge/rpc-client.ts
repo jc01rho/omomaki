@@ -145,6 +145,29 @@ function buildErrorMessage(error: unknown): string {
   return 'RPC request failed'
 }
 
+/**
+ * The RPC child died on its own (crash, signal, spawn ENOENT). Exported so
+ * the session layer can distinguish transport death from deliberate
+ * stop/abort rejections and apply the one-shot retry.
+ */
+export class OmoRpcClientExitedError extends Error {
+  readonly exitCode: number | null
+  readonly exitSignal: NodeJS.Signals | null
+  constructor(
+    exitCode: number | null,
+    exitSignal: NodeJS.Signals | null,
+    spawnError?: unknown,
+  ) {
+    super(
+      `omo rpc client exited unexpectedly (code=${String(exitCode)}, signal=${String(exitSignal)})` +
+        (spawnError instanceof Error ? `: ${spawnError.message}` : ''),
+    )
+    this.name = 'OmoRpcClientExitedError'
+    this.exitCode = exitCode
+    this.exitSignal = exitSignal
+  }
+}
+
 export class OmoRpcClient {
   private readonly command: string
   private readonly args: string[]
@@ -221,6 +244,13 @@ export class OmoRpcClient {
 
       child.once('exit', (code, signal) => {
         this.handleChildExit(code, signal)
+      })
+
+      // Without a listener a spawn 'error' (e.g. ENOENT for a missing omo
+      // binary) crashes the whole bot process; route it through the same
+      // failure path as a child exit so the session layer can recover.
+      child.once('error', (childError) => {
+        this.failWith(new OmoRpcClientExitedError(null, null, childError))
       })
 
       this.state = 'running'
@@ -430,10 +460,10 @@ export class OmoRpcClient {
   }
 
   private handleChildExit(code: number | null, signal: NodeJS.Signals | null): void {
-    const error = new Error(
-      `omo rpc client exited unexpectedly (code=${String(code)}, signal=${String(signal)})`,
-    )
+    this.failWith(new OmoRpcClientExitedError(code, signal))
+  }
 
+  private failWith(error: Error): void {
     for (const [, pending] of this.pendingRequests) {
       pending.reject(error)
     }

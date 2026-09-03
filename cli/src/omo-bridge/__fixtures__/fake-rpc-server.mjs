@@ -20,6 +20,35 @@
 //   session.revert/unrevert shim mapping).
 
 import { StringDecoder } from 'node:string_decoder'
+import fs from 'node:fs'
+
+// Optional test hooks passed as argv:
+// - argv[2]: crash counter file. When prompt text includes "crash-mid-turn"
+//   and the counter is > 0, the child decrements it and exits mid-turn (used
+//   to test the one-shot transport retry; set the counter to 2 for a
+//   crash-always child).
+// - argv[3]: startup death counter file. When > 0 the child exits at startup
+//   (used to test the corrupt-session quarantine fallback).
+const crashCounterPath = process.argv[2]
+const startupCounterPath = process.argv[3]
+
+/** @type {(counterPath: string | undefined) => boolean} */
+function takeCounter(counterPath) {
+  if (counterPath === undefined) return false
+  try {
+    const value = Number(fs.readFileSync(counterPath, 'utf8').trim())
+    if (Number.isFinite(value) && value > 0) {
+      fs.writeFileSync(counterPath, String(value - 1))
+      return true
+    }
+  } catch {}
+  return false
+}
+
+if (takeCounter(startupCounterPath)) {
+  process.stderr.write('Error: Session file is not a valid OmO session: test.jsonl\n')
+  process.exit(1)
+}
 
 const decoder = new StringDecoder('utf8')
 let buffer = ''
@@ -185,6 +214,17 @@ function handleRecord(line) {
     }
     if (message.includes('set_idle')) {
       busy = false
+    }
+    if (message.includes('crash-mid-turn') && takeCounter(crashCounterPath)) {
+      send({ id, type: 'response', command: 'prompt', success: true })
+      send({ type: 'agent_start' })
+      process.exit(1)
+      return
+    }
+    if (message.includes('hang-forever')) {
+      send({ id, type: 'response', command: 'prompt', success: true })
+      send({ type: 'agent_start' })
+      return
     }
     if (message.includes('touch-denied')) {
       const confirmId = 'confirm-1'
