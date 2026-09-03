@@ -16,7 +16,7 @@ You can try the bot in the [Kimaki Discord Server](https://discord.gg/qz3hapKcMM
 Kimaki runs on your machine and connects to Discord. You need **Node.js 18+** (or [Bun](https://bun.sh)) and a **Discord server you own** (create one with the **+** button in the Discord sidebar if you don't have one).
 
 ```bash
-npx -y kimaki@latest
+npx -y omomaki@latest
 ```
 
 The CLI walks you through the whole setup in about a minute:
@@ -32,7 +32,7 @@ The CLI walks you through the whole setup in about a minute:
 - The CLI checks for the agent runtime and installs it if missing.
 - It generates a one-time install link and opens it in your browser. **Don't share that link** — it contains your credentials.
 - After you authorize, the CLI waits for the bot to appear in your server, then asks you to pick project directories.
-- Everything is saved locally, so the next `npx -y kimaki@latest` starts straight into the bot.
+- Everything is saved locally, so the next `npx -y omomaki@latest` starts straight into the bot.
 
 ### If you already have a server
 
@@ -100,7 +100,7 @@ When you send a message during an active run, the agent normally queues it to ru
 Run the CLI and follow the interactive prompts:
 
 ```bash
-npx -y kimaki@latest
+npx -y omomaki@latest
 ```
 
 The setup wizard gives you two options:

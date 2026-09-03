@@ -1,5 +1,5 @@
 {
-  "name": "kimaki",
+  "name": "omomaki",
   "module": "index.ts",
   "type": "module",
   "version": "0.26.0",
@@ -19,8 +19,10 @@
     "format": "oxfmt src",
     "sync-skills": "tsx scripts/sync-skills.ts"
   },
-  "repository": "https://github.com/remorses/kimaki",
-  "bin": "bin.js",
+  "repository": "https://github.com/jc01rho/omomaki",
+  "bin": {
+    "kimaki": "bin.js"
+  },
   "exports": {
     "./package.json": "./package.json",
     "./anthropic-auth-plugin": {
