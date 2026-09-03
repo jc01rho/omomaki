@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { StringDecoder } from 'node:string_decoder'
@@ -7,9 +8,17 @@ import { attachJsonlLineReader, serializeJsonLine } from './rpc-jsonl.js'
 const DEFAULT_COMMAND = 'omo'
 const DEFAULT_ARGS = ['--mode', 'rpc'] as const
 const FORCE_KILL_TIMEOUT_MS = 2_000
-const APPROVE_EXTENSION_PATH = fileURLToPath(
-  new URL('./omomaki-approve.ts', import.meta.url),
-)
+
+// Resolve the in-repo approve extension path. In dev (tsx) the source is
+// omomaki-approve.ts; after `pnpm build` the compiled dist ships
+// omomaki-approve.js. Pick whichever exists so the installed package can
+// inject the extension instead of failing with "Extension path does not exist".
+const APPROVE_EXTENSION_PATH = (() => {
+  const dir = path.dirname(fileURLToPath(import.meta.url))
+  const ts = path.join(dir, 'omomaki-approve.ts')
+  const js = path.join(dir, 'omomaki-approve.js')
+  return fs.existsSync(ts) ? ts : js
+})()
 
 function looksLikeOmoCommand(command: string): boolean {
   const base = path.basename(command)
