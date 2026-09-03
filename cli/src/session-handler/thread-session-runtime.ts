@@ -1366,6 +1366,15 @@ export class ThreadSessionRuntime {
   // Global events (tui.toast.show) bypass the guard.
   // Subtask sessions also bypass — they're tracked in subtaskSessions.
 
+  /**
+   * Ingest an OpenCode event from outside this runtime's own RPC child —
+   * used by /resume live-follow to surface progress from an omo session that
+   * is actively running in another process. Same handling as internal events.
+   */
+  async ingestExternalEvent(event: OpenCodeEvent): Promise<void> {
+    await this.handleEvent(event)
+  }
+
   private async handleEvent(event: OpenCodeEvent): Promise<void> {
     // session.diff can carry repeated full-file before/after snapshots and is
     // not used by event-derived runtime state, queueing, typing, or UI routing.

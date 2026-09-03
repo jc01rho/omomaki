@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Event as OpenCodeEvent } from '@opencode-ai/sdk/v2'
 import { getDataDir } from '../config.js'
+import { getThreadOmoSessionPath } from '../database.js'
 import { createLogger, LogPrefix } from '../logger.js'
+import { startLiveFollow, stopLiveFollow } from './rpc-live-follow.js'
 import {
   OmoRpcClient,
   OmoRpcClientExitedError,
@@ -203,6 +205,7 @@ async function dispatchEvents(
 }
 
 function forgetSession(threadId: string, sessionId: string): void {
+  stopLiveFollow(threadId)
   sessions.delete(threadId)
   sessionIdToThreadId.delete(sessionId)
 }
@@ -459,7 +462,10 @@ export async function getOrStartRpcSession(
   }
 
   const sessionId = `omo_${crypto.randomUUID()}`
-  const sessionFile = sessionFileFor(host.threadId)
+  // /resume binds a new thread to an existing durable session file; reuse it
+  // so the ongoing conversation is preserved instead of starting a fresh file.
+  const resumedPath = await getThreadOmoSessionPath(host.threadId)
+  const sessionFile = resumedPath ?? sessionFileFor(host.threadId)
   const spawn = resolveSpawn(host.cwd, sessionFile)
   const liveBox: { current: LiveSession | undefined } = { current: undefined }
 
@@ -513,6 +519,29 @@ export async function getOrStartRpcSession(
   await startLiveSession(live, sessionFile)
   sessions.set(host.threadId, live)
   sessionIdToThreadId.set(sessionId, host.threadId)
+
+  // Live-follow: when this thread was resumed onto an existing omo session
+  // file, poll that file so externally appended conversation (the omo local
+  // process still running) reaches Discord in real time.
+  if (resumedPath !== null && fs.existsSync(resumedPath)) {
+    const follow = startLiveFollow({
+      threadId: host.threadId,
+      sessionFile: resumedPath,
+      host: {
+        dispatch: async (event) => {
+          live.dispatchChain = live.dispatchChain.then(async () => {
+            if (liveBox.current === undefined) return
+            await liveBox.current.host.dispatch(event)
+          })
+        },
+        reload: async () => {
+          await live.client.request('reload')
+        },
+      },
+    })
+    void follow
+  }
+
   return createHandle(live, host.threadId)
 }
 

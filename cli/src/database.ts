@@ -817,6 +817,42 @@ export async function setThreadSession(threadId: string, sessionId: string) {
   await upsertThreadSession({ threadId, sessionId, source: 'kimaki' })
 }
 
+// Record the omo session file a Discord thread should reuse. /resume binds a
+// new thread to an existing durable session; without this the thread would
+// start a fresh omo session file and lose the ongoing conversation.
+export async function setThreadOmoSessionPath(
+  threadId: string,
+  sessionPath: string,
+): Promise<void> {
+  const db = await getDb()
+  const now = new Date().toISOString()
+  await db
+    .insert(schema.omo_thread_bindings)
+    .values({
+      discord_thread_id: threadId,
+      omo_thread_id: threadId,
+      session_path: sessionPath,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflictDoUpdate({
+      target: schema.omo_thread_bindings.discord_thread_id,
+      set: { session_path: sessionPath, updated_at: now },
+    })
+}
+
+export async function getThreadOmoSessionPath(
+  threadId: string,
+): Promise<string | null> {
+  const db = await getDb()
+  return (
+    await db.query.omo_thread_bindings.findFirst({
+      where: { discord_thread_id: threadId },
+      columns: { session_path: true },
+    })
+  )?.session_path ?? null
+}
+
 export async function upsertThreadSession({ threadId, sessionId, source }: { threadId: string; sessionId: string; source: ThreadSessionSource }) {
   const db = await getDb()
   // updated_at is written explicitly on BOTH paths, never left to the column's

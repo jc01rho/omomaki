@@ -127,6 +127,11 @@ function handleRecord(line) {
     return
   }
 
+  if (type === 'reload') {
+    send({ id, type: 'response', command: 'reload', success: true, data: { cancelled: false } })
+    return
+  }
+
   if (type === 'abort') {
     send({ id, type: 'response', command: 'abort', success: true })
     send({ type: 'agent_settled' })

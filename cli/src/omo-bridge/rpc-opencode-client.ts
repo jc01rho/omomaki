@@ -1,5 +1,8 @@
 import path from 'node:path'
+import os from 'node:os'
+import fs from 'node:fs'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { getDataDir } from '../config.js'
 import { getDb } from '../db.js'
 import { getThreadIdBySessionId } from '../database.js'
 import type { OmoRpcClient } from './rpc-client.js'
@@ -106,8 +109,10 @@ function stubSession(opts: {
   directory: string
   title?: string
   created?: number
+  updated?: number
 }) {
-  const now = opts.created ?? Date.now()
+  const created = opts.created ?? Date.now()
+  const updated = opts.updated ?? created
   return {
     id: opts.id,
     slug: opts.id,
@@ -115,7 +120,7 @@ function stubSession(opts: {
     directory: opts.directory,
     title: opts.title ?? opts.id,
     version: 'omo-rpc',
-    time: { created: now, updated: now },
+    time: { created, updated },
   }
 }
 
@@ -209,22 +214,174 @@ function mapRpcMessage(raw: unknown, sessionID: string, directory: string) {
 }
 
 async function lookupThreadId(sessionId: string): Promise<string | null> {
+  // Reverse lookup covers sessions bound to a Discord thread. Unbound omo
+  // durable sessions have no threadId yet — session.get resolves those from
+  // the session file instead.
   return (await getThreadIdBySessionId(sessionId)) ?? null
+}
+
+export async function lookupSessionFileByDurableId(durableId: string): Promise<string | null> {
+  // 1. kimaki's own RPC session files.
+  const kimakiDir = path.join(getDataDir(), 'omo-sessions')
+  for (const file of listSessionFilesInDir(kimakiDir)) {
+    if (sessionFileHasId(file, durableId)) return file
+  }
+  // 2. Real omo sessions under ~/.omo/agent/sessions/<encoded-cwd>/.
+  const omoRoot = omoAgentSessionsDir()
+  if (fs.existsSync(omoRoot)) {
+    for (const cwdDir of fs.readdirSync(omoRoot)) {
+      const projectDir = path.join(omoRoot, cwdDir)
+      if (!fs.statSync(projectDir).isDirectory()) continue
+      for (const file of listSessionFilesInDir(projectDir)) {
+        if (sessionFileHasId(file, durableId)) return file
+      }
+    }
+  }
+  return null
+}
+
+function sessionFileHasId(file: string, durableId: string): boolean {
+  try {
+    const header = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[0] ?? '{}') as {
+      id?: string
+    }
+    return header.id === durableId
+  } catch {
+    return false
+  }
+}
+
+function readSessionFileSummary(file: string): {
+  id: string
+  cwd?: string
+  timestamp: number
+  updated: number
+  title?: string
+} | null {
+  try {
+    const lines = fs.readFileSync(file, 'utf8').split('\n')
+    const header = JSON.parse(lines[0] ?? '{}') as {
+      id?: string
+      cwd?: string
+      timestamp?: string
+    }
+    const id = header.id
+    if (typeof id !== 'string' || id.length === 0) return null
+    const created = header.timestamp ? Date.parse(header.timestamp) : Date.now()
+    // Use the file's mtime so a session actively in use climbs to the top
+    // even if its header timestamp is older (e.g. resumed multiple times).
+    const updated = Math.max(created, fs.statSync(file).mtimeMs)
+    return {
+      id,
+      cwd: header.cwd,
+      timestamp: created,
+      updated,
+      title: firstUserMessageText(lines),
+    }
+  } catch {
+    return null
+  }
+}
+
+// Derive a human-readable title for /resume from the first real user message
+// in the session file. The durable id alone (01a0653b-...) tells the user
+// nothing about what the session was doing.
+function firstUserMessageText(lines: string[]): string | undefined {
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let entry: unknown
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isRecord(entry)) continue
+    if (entry.type !== 'message') continue
+    const message = isRecord(entry.message) ? entry.message : {}
+    if (message.role !== 'user') continue
+    const text = textFromUnknown(message.content)
+    if (text.trim()) return text.trim().slice(0, 80)
+  }
+  return undefined
+}
+
+// omo stores its durable sessions under ~/.omo/agent/sessions/<encoded-cwd>/,
+// one directory per project (cwd). The directory name encodes the cwd as
+// '--' + cwd.lstrip('/').replace('/', '-') + '--'. kimaki's own RPC sessions
+// live under <dataDir>/omo-sessions/. /resume must list the real omo sessions
+// so the autocomplete shows what omo itself shows.
+function omoAgentSessionsDir(): string {
+  return path.join(os.homedir(), '.omo', 'agent', 'sessions')
+}
+
+function encodeOmoCwd(cwd: string): string {
+  return `--${cwd.replace(/^\/+/, '').replace(/\//g, '-')}--`
+}
+
+function listSessionFilesInDir(dir: string): string[] {
+  if (!fs.existsSync(dir)) return []
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith('.jsonl'))
+    .map((name) => path.join(dir, name))
 }
 
 async function listBoundSessions(directory: string) {
   const db = await getDb()
-  const rows = await db.query.thread_sessions.findMany({
-    columns: { thread_id: true, session_id: true, created_at: true, updated_at: true },
+  const bound = await db.query.thread_sessions.findMany({
+    columns: { thread_id: true, session_id: true },
   })
-  return rows.map((row) => {
-    const created = row.created_at?.getTime() ?? Date.now()
-    return stubSession({
-      id: row.session_id,
-      directory,
-      created,
-    })
-  })
+  const boundIds = new Set(bound.map((row) => row.session_id))
+  const seenIds = new Set<string>()
+  const sessions = []
+
+  // 1. Real omo sessions for this project (the source of truth omo shows).
+  const omoProjectDir = path.join(
+    omoAgentSessionsDir(),
+    encodeOmoCwd(directory),
+  )
+  for (const file of listSessionFilesInDir(omoProjectDir)) {
+    const summary = readSessionFileSummary(file)
+    if (!summary) continue
+    const id = summary.id
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+    if (boundIds.has(id)) continue
+    sessions.push(
+      stubSession({
+        id,
+        directory,
+        title: summary.title ?? id,
+        created: summary.timestamp,
+        updated: summary.updated,
+      }),
+    )
+  }
+
+  // 2. kimaki's own RPC session files (threadId-keyed) for this project.
+  const kimakiDir = path.join(getDataDir(), 'omo-sessions')
+  for (const file of listSessionFilesInDir(kimakiDir)) {
+    const summary = readSessionFileSummary(file)
+    if (!summary) continue
+    if (summary.cwd && summary.cwd !== directory) continue
+    const id = summary.id
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+    if (boundIds.has(id)) continue
+    sessions.push(
+      stubSession({
+        id,
+        directory,
+        title: summary.title ?? id,
+        created: summary.timestamp,
+        updated: summary.updated,
+      }),
+    )
+  }
+
+  // Sort most-recent activity first so the latest session lands at the top
+  // of /resume autocomplete.
+  return sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
 }
 
 async function withRpcClient<T>(
@@ -324,8 +481,26 @@ function createShim(directory: string): OpencodeClient {
     async get(params: { sessionID?: string } = {}) {
       const sessionID = params.sessionID
       if (!sessionID) return errResult('sessionID required')
+      // The autocomplete value is the durable omo session id. Resolve it to a
+      // summary from the actual session file (omo or kimaki-owned) so /resume
+      // finds sessions it just listed. threadId lookup covers Discord-bound
+      // sessions; the durable-id file lookup covers unbound omo sessions.
       const threadId = await lookupThreadId(sessionID)
-      if (!threadId) return errResult('Session not found')
+      if (!threadId) {
+        const file = await lookupSessionFileByDurableId(sessionID)
+        const summary = file ? readSessionFileSummary(file) : null
+        if (!summary) return errResult('Session not found')
+        const revert = revertCursors.get(sessionID)
+        const session = stubSession({
+          id: sessionID,
+          directory,
+          title: summary.title ?? sessionID,
+          created: summary.timestamp,
+        })
+        return okResult(
+          revert ? { ...session, revert } : session,
+        )
+      }
       const revert = revertCursors.get(sessionID)
       return okResult(
         revert

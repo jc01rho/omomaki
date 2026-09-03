@@ -11,10 +11,12 @@ import type { CommandContext, AutocompleteContext } from './types.js'
 import {
   getChannelDirectory,
   setThreadSession,
+  setThreadOmoSessionPath,
   setPartMessagesBatch,
   getAllThreadSessionIds,
 } from '../database.js'
 import { initializeOpencodeForDirectory } from '../opencode.js'
+import { lookupSessionFileByDurableId } from '../omo-bridge/rpc-opencode-client.js'
 import {
   sendThreadMessage,
   resolveProjectDirectoryFromAutocomplete,
@@ -97,10 +99,55 @@ export async function handleResumeCommand({
     // and create a duplicate Sync thread before the rest of this setup runs.
     await setThreadSession(thread.id, sessionId)
 
+    // Record the source omo session file so the new thread reuses the ongoing
+    // conversation instead of starting a fresh session file.
+    const resumedFile = await lookupSessionFileByDurableId(sessionId)
+    if (resumedFile) {
+      await setThreadOmoSessionPath(thread.id, resumedFile)
+    }
+
+    // Pre-start the thread runtime + its omo RPC child so the live-follow
+    // poller (started inside getOrStartRpcSession for resumed sessions) is
+    // active immediately — an externally running omo session keeps streaming
+    // its progress into this thread without waiting for the user's first
+    // message.
+
     // Add user to thread so it appears in their sidebar
     await thread.members.add(command.user.id)
 
     logger.log(`[RESUME] Created thread ${thread.id} for session ${sessionId}`)
+
+    // Pre-start the thread runtime + its omo RPC child so the live-follow
+    // poller (started inside getOrStartRpcSession for resumed sessions) is
+    // active immediately — an externally running omo session keeps streaming
+    // its progress into this thread without waiting for the user's first
+    // message.
+    if (resumedFile) {
+      const { getOrCreateRuntime } = await import(
+        '../session-handler/thread-session-runtime.js'
+      )
+      const { getOrStartRpcSession } = await import(
+        '../omo-bridge/rpc-session.js'
+      )
+      const runtime = getOrCreateRuntime({
+        threadId: thread.id,
+        thread,
+        projectDirectory,
+        sdkDirectory: projectDirectory,
+        channelId: channel.id,
+      })
+      await getOrStartRpcSession({
+        threadId: thread.id,
+        cwd: projectDirectory,
+        dispatch: async (event) => {
+          await runtime.ingestExternalEvent(event)
+        },
+      }).catch((error: unknown) => {
+        logger.warn(
+          `[RESUME] Failed to pre-start omo RPC live-follow: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+    }
 
     const messagesResponse = await getClient().session.messages({
       sessionID: sessionId,
