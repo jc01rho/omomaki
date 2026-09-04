@@ -64,7 +64,7 @@ describe('rpc-live-follow', () => {
   })
 
   function startFollow(threadId: string, file: string, h: LiveFollowHost) {
-    const ctrl = startLiveFollow({ threadId, sessionFile: file, host: h, pollMs: POLL_MS })
+    const ctrl = startLiveFollow({ threadId, sessionFile: file, sessionId: 's-' + threadId, host: h, pollMs: POLL_MS })
     controllers.push(ctrl)
     return ctrl
   }
@@ -144,7 +144,7 @@ describe('omoFileEntriesToEvents', () => {
           message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
         },
       ],
-      { directory: dir },
+      { directory: dir, sessionId: 'test-session' },
     )
     const serialized = JSON.stringify(events)
     expect(serialized).toContain('message.updated')
@@ -160,7 +160,7 @@ describe('omoFileEntriesToEvents', () => {
         { id: 'h2', type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'real' }] } },
         { id: 'h3', type: 'model_change', provider: 'p', modelId: 'm' },
       ],
-      { directory: '/x' },
+      { directory: '/x', sessionId: 'test-session' },
     )
     // Only the message entry should produce events
     expect(events.length).toBe(2)

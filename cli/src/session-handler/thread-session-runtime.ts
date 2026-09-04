@@ -1369,9 +1369,32 @@ export class ThreadSessionRuntime {
   /**
    * Ingest an OpenCode event from outside this runtime's own RPC child —
    * used by /resume live-follow to surface progress from an omo session that
-   * is actively running in another process. Same handling as internal events.
+   * is actively running in another process. Posts directly to Discord thread.
    */
   async ingestExternalEvent(event: OpenCodeEvent): Promise<void> {
+    if (
+      event.type === 'message.part.updated' &&
+      event.properties?.part?.type === 'text'
+    ) {
+      const part = event.properties.part
+      const text = part.text?.trim()
+      if (text) {
+        const metadata = (part as unknown as { metadata?: { role?: string } }).metadata
+        const role = metadata?.role ?? 'assistant'
+        if (role === 'user') {
+          logger.log(
+            `[LIVE-FOLLOW] Forwarding external user prompt to thread ${this.threadId}: ${text.slice(0, 60)}`,
+          )
+          await sendThreadMessage(this.thread, `» **Local:** ${text}`)
+        } else {
+          logger.log(
+            `[LIVE-FOLLOW] Forwarding external assistant reply to thread ${this.threadId}: ${text.slice(0, 60)}`,
+          )
+          await sendThreadMessage(this.thread, `⬥ ${text}`)
+        }
+      }
+      return
+    }
     await this.handleEvent(event)
   }
 

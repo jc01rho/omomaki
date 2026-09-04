@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import type { Event as OpenCodeEvent } from '@opencode-ai/sdk/v2'
 
 /**
@@ -36,6 +37,8 @@ type LiveFollowOptions = {
   threadId: string
   sessionFile: string
   host: LiveFollowHost
+  /** Session id the runtime expects on events (the bound durable id). */
+  sessionId: string
   pollMs?: number
 }
 
@@ -68,9 +71,10 @@ function toEventId(seed: string, kind: string): string {
  */
 export function omoFileEntriesToEvents(
   entries: unknown[],
-  opts: { directory: string },
+  opts: { directory: string; sessionId: string },
 ): OpenCodeEvent[] {
   const directory = opts.directory
+  const sessionID = opts.sessionId
   const events: OpenCodeEvent[] = []
 
   for (const raw of entries) {
@@ -82,7 +86,6 @@ export function omoFileEntriesToEvents(
     const created =
       typeof raw.timestamp === 'string' ? Date.parse(raw.timestamp) : Date.now()
     const text = textFromContent(message.content)
-    const sessionID = typeof message.session_id === 'string' ? message.session_id : 'session'
     const partId = `${id}_text`
 
     // session.layout/message.updated — tell the runtime a message exists.
@@ -117,6 +120,9 @@ export function omoFileEntriesToEvents(
           messageID: id,
           type: 'text',
           text,
+          metadata: {
+            role,
+          },
         },
       },
     } as OpenCodeEvent)
@@ -184,16 +190,11 @@ export function startLiveFollow(options: LiveFollowOptions): LiveFollowControlle
       const newLines = lines.slice(lastSeenCount)
       lastSeenCount = lines.length
 
-      // Reload the omo child so its in-memory state includes the externals
-      // (the child cannot see them otherwise), then dispatch their events.
-      try {
-        await host.reload()
-      } catch {
-        // reload failure should not block dispatching the entries we did read
-      }
+
       const entries = newLines.map(parseEntry).filter((e): e is unknown => e !== null)
       const events = omoFileEntriesToEvents(entries, {
-        directory: sessionFile,
+        directory: path.dirname(sessionFile),
+        sessionId: options.sessionId,
       })
       for (const event of events) {
         if (stopped) break

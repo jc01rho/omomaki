@@ -527,6 +527,7 @@ export async function getOrStartRpcSession(
     const follow = startLiveFollow({
       threadId: host.threadId,
       sessionFile: resumedPath,
+      sessionId: sessionId,
       host: {
         dispatch: async (event) => {
           live.dispatchChain = live.dispatchChain.then(async () => {

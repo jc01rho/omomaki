@@ -142,11 +142,15 @@ export async function handleResumeCommand({
         dispatch: async (event) => {
           await runtime.ingestExternalEvent(event)
         },
-      }).catch((error: unknown) => {
-        logger.warn(
-          `[RESUME] Failed to pre-start omo RPC live-follow: ${error instanceof Error ? error.message : String(error)}`,
-        )
       })
+        .then(() => {
+          logger.log(`[RESUME] Successfully pre-started omo RPC live-follow for thread ${thread.id}`)
+        })
+        .catch((error: unknown) => {
+          logger.warn(
+            `[RESUME] Failed to pre-start omo RPC live-follow: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
     }
 
     const messagesResponse = await getClient().session.messages({
